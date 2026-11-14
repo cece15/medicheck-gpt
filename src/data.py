@@ -103,9 +103,12 @@ def encode_examples(pair_lines, tok):
     return out
 
 
-def get_sft_batch(examples, batch_size, device, pad_id):
-    """Pad a random batch of whole examples. Targets are -100 (ignored by the loss) on the record part."""
+def get_sft_batch(examples, batch_size, device, pad_id, max_len=None):
+    """Pad a random batch of whole examples. Targets are -100 (ignored by the loss) on the record part.
+    max_len guards the window: an example longer than the model's context is cut, never allowed to overflow."""
     pick = [examples[i] for i in torch.randint(len(examples), (batch_size,))]
+    if max_len:
+        pick = [(ids[:max_len + 1], given) for ids, given in pick]
     T = max(len(ids) for ids, _ in pick) - 1
     x = torch.full((batch_size, T), pad_id, dtype=torch.long)
     y = torch.full((batch_size, T), -100, dtype=torch.long)

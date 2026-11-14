@@ -107,9 +107,9 @@ Read the files in this order. Each section says what the step does, why it is bu
 **What three runs showed.**
 - Mismatched diagnoses: 0.68 in every run. This is the model's real skill.
 - Wrong city: 0.21, reliably backwards. Surprise tracks familiarity: a common wrong city looks more normal than a rare true one.
-- Swapped payments and an extra digit: chance. A rule catches them every time.
+- Swapped payments and an extra digit: chance when *ranking* across records, but the paired test (run 3a) shows the model *notices* them on the same record 90% and 99% of the time. The signal is there; differences between hospitals drown it. A rule catches them every time, so rules go first.
 - Run 2 tried two corrections, scoring after the name (`cond`) and the ratio to the bigram (`ratio`). Both made diagnosis detection worse (0.68 → 0.52), because the next rare thing after the name is the unseen hospital's city. They are reported, not hidden, and `raw` stays the score.
-- `paired_raw` (run 3) asks the cleaner question: on the same record, does the error raise surprise?
+- `paired_raw` asks the cleaner question: on the same record, does the error raise surprise? Diagnosis 0.85, payments 0.90, extra digit 0.99, wrong city 0.16.
 
 **The tool, therefore, is a hybrid.** `flag_file` applies rules first (`rule_hits`: Medicare more than the total, paid more than billed, a bill beyond the 99.5th percentile of charge-to-payment ratios), then ranks the rest by the model's surprise. A wrong city needs a lookup against CMS's hospital register, not a language model.
 
@@ -121,6 +121,7 @@ Read the files in this order. Each section says what the step does, why it is bu
 - **Does a bigger model help?** Small is clearly worse. Base and large traded places across two runs (0.652 vs 0.621, then 0.635 vs 0.634), so the gain is within noise, and large overfits by step 1,500. With this much data, base is the right size. Running it twice is how you know.
 - **Can the teacher's mistakes leak into the student?** They can, which is why every teacher number is computed in Python and checked before training, and the student is checked the same way.
 - **Why did the student ignore the record in run 1?** Random windows and a loss on every character: copying the record was a small part of what it was graded on. Whole examples, a loss on the explanation only, and a start from the record model fix that.
+- **Can the model see arithmetic errors?** Yes, on a given record: an extra digit raises its surprise 99% of the time. It can't rank them across records, because some hospitals are simply more surprising than others. That is why rules go first.
 - **Why is the wrong-city AUC below 0.5?** Surprise tracks familiarity. A common wrong city is less surprising than a rare true one. I tried correcting it with a likelihood ratio against the bigram; a character model's sense of rarity is too coarse, so it did not help. The real fix is a lookup.
 - **Why placeholders, isn't that cheating?** It is how production data-to-text works. The model's job is the sentence; numbers come from the record, so they cannot be wrong. Without it, the student invented numbers 100% of the time.
 - **Why did the teacher lose a third of the records?** On a first try it attached a real number to the wrong label 44% of the time. I would rather train on fewer correct sentences than more wrong ones.

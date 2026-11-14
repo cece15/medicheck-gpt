@@ -134,7 +134,7 @@ def main():
         src = torch.load(args.init_from, map_location='cpu') if args.init_from else None
         vocab_text = train_text + (''.join(src['stoi']) if src else '')
         tok = D.CharTokenizer(vocab_text)                         # training characters (+ the pre-trained model's)
-        longest = max(len(r) for r in records(train_text)) + 2
+        longest = max(len(r) for r in records(train_text) + records(val_text)) + 2   # train AND val must fit
         if args.model == 'gpt' and args.context_size < longest:     # the window must hold one whole example
             print(f'context_size {args.context_size} -> {longest} so one full example fits')
             args.context_size = longest
@@ -154,8 +154,9 @@ def main():
         if task == 'explain':                                     # whole examples, loss on the explanation only
             tr, va = D.encode_examples(records(train_text), tok), D.encode_examples(records(val_text), tok)
             pad = tok.stoi['\n']
-            batchers = {'train': lambda: D.get_sft_batch(tr, args.batch_size, device, pad),
-                        'val': lambda: D.get_sft_batch(va, args.batch_size, device, pad)}
+            ctx = args.context_size
+            batchers = {'train': lambda: D.get_sft_batch(tr, args.batch_size, device, pad, ctx),
+                        'val': lambda: D.get_sft_batch(va, args.batch_size, device, pad, ctx)}
             sizes = f'{len(tr):,} train / {len(va):,} val examples'
         else:                                                     # random windows over the running text
             train_data = torch.tensor(tok.encode(train_text), dtype=torch.long)

@@ -71,7 +71,7 @@ Every hyperparameter is a flag (`--init_from`, `--delex`, `--n_layer`, `--n_head
 
 ## Results
 
-Three runs on a Colab T4, 14 November 2026, each saved with its outputs: `notebooks/run1_14nov.ipynb` (1a), `notebooks/run1b_14nov.ipynb` (1b, a repeat of 1a) and `notebooks/run2_14nov.ipynb` (2). The base GPT was trained three times with the same settings and seed; ranges below are across those trainings (GPU arithmetic is not perfectly deterministic). The bigram matched exactly every time. Test set: 20 hospitals never seen in training.
+Runs on a Colab T4, 14 November 2026, each saved with its outputs: `notebooks/run1_14nov.ipynb` (1a), `notebooks/run1b_14nov.ipynb` (1b, a repeat of 1a), `notebooks/run2_14nov.ipynb` (2) and `notebooks/run3a_14nov.ipynb` (3a: re-evaluation and the paired test). The base GPT was trained three times with the same settings and seed; ranges below are across those trainings (GPU arithmetic is not perfectly deterministic). The bigram matched exactly every time. Test set: 20 hospitals never seen in training.
 
 ### Language model: bigram vs GPT
 
@@ -128,36 +128,36 @@ Run 1's accepted sentences were fluent and often wrong ("received $15,466 from M
 | | Run 1 | Run 2 | Run 3 |
 |---|---|---|---|
 | Training | from scratch, random windows | from the record GPT, whole examples, loss on the explanation only | as run 2, with the record's values as placeholders |
-| ROUGE-L vs teacher | 0.312 / 0.319 | 0.438 | |
-| BLEU | 0.107 / 0.105 | 0.217 | |
-| BERTScore F1 | 0.891 / 0.892 raw | 0.513 rescaled | |
+| ROUGE-L vs teacher | 0.312 / 0.319 | 0.438 / 0.413 | |
+| BLEU | 0.107 / 0.105 | 0.217 / 0.192 | |
+| BERTScore F1 | 0.891 / 0.892 raw | 0.513 / 0.504 rescaled | |
+| Explanation-only perplexity / next-character accuracy | | 1.88 / 85.7% | |
 | Sentences using only the record's numbers | 0% | 0% | |
-| Sentences passing the teacher's own checks | | | |
-| Sentences naming the record's hospital or city | | | |
+| Sentences passing the teacher's own checks | | **0%** | |
+| Sentences naming the record's hospital or city | | **2%** | |
 
-Run 1 learned the teacher's style and ignored the record. Run 2 reads it partly: for Munson Healthcare Grayling Hospital it wrote about Munson Healthcare Otsego Memorial in Gaylord, the same health system thirty miles away, with numbers of the right size that were not the record's. A model under a million parameters fills a sentence from memory rather than copying digits from its input; the explainer reproduced the very silent error the project studies. Run 3 stops asking it to copy: the teacher's numbers, hospital, city and condition become placeholders for training, the student learns where each goes, and code puts the record's values back. This is delexicalisation (Wen et al., 2015), the standard way data-to-text systems keep numbers faithful.
+Run 1 learned the teacher's style and ignored the record. Run 2 writes like the teacher (explanation perplexity 1.88, 86% of next characters right) and still fails every factual check: none of its sentences pass the teacher's checks, and 2% name the right hospital or city. It reads the record only partly: for Munson Healthcare Grayling Hospital it wrote about Munson Healthcare Otsego Memorial in Gaylord, the same health system thirty miles away, with numbers of the right size that were not the record's. A model under a million parameters fills a sentence from memory rather than copying digits from its input; the explainer reproduced the very silent error the project studies. Run 3 stops asking it to copy: the teacher's numbers, hospital, city and condition become placeholders for training, the student learns where each goes, and code puts the record's values back. This is delexicalisation (Wen et al., 2015), the standard way data-to-text systems keep numbers faithful.
 
 (Run 2's evaluation reported a test perplexity of 33.8. That was a measurement error: it scored the record text, which the fine-tuned student is never trained to predict. Run 3 measures perplexity on the explanation only.)
 
 ### Flagging silent errors
 
-ROC AUC on 500 clean test records against the same records with one planted error. 0.5 = chance; below 0.5 = backwards.
+Two questions, two tests. **Ranking (ROC AUC):** across different records, do corrupted ones score higher than clean ones? **Noticing (paired):** on the *same* record, does the planted error raise the model's surprise? 500 clean test records; 0.5 = chance, below 0.5 = backwards.
 
-| Planted error | Bigram, raw | GPT raw (runs 1a / 1b / 2) | GPT, after name (2) | GPT, ratio to bigram (2), 95% CI |
+| Planted error | Bigram, raw AUC | GPT raw AUC (runs 1a / 1b / 2) | GPT raw AUC 95% CI | **GPT paired** (base / large) |
 |---|---|---|---|---|
-| DRG code with another code's description | 0.610 | **0.680 / 0.682 / 0.677** | 0.521 | 0.525 (0.49–0.56) |
-| Hospital moved to another city in its state | 0.469 | 0.226 / 0.210 / 0.208 | 0.139 | 0.147 (0.13–0.17) |
-| Total and Medicare payments swapped | 0.500 | 0.526 / 0.528 / 0.529 | 0.507 | 0.514 (0.48–0.55) |
-| Covered charges with an extra digit | 0.509 | 0.553 / 0.545 / 0.542 | 0.513 | 0.523 (0.49–0.56) |
+| DRG code with another code's description | 0.610 | 0.680 / 0.682 / 0.677 | 0.645 – 0.703 | **0.848 / 0.846** |
+| Hospital moved to another city in its state | 0.469 | 0.226 / 0.210 / 0.208 | 0.183 – 0.233 | 0.164 / 0.202 |
+| Total and Medicare payments swapped | 0.500 | 0.526 / 0.528 / 0.529 | 0.495 – 0.556 | **0.896 / 0.766** |
+| Covered charges with an extra digit | 0.509 | 0.553 / 0.545 / 0.542 | 0.507 – 0.571 | **0.994 / 1.000** |
+
+Run 2 also tried scoring only after the hospital name, and a likelihood ratio against the bigram (Ren et al., 2019). Both lowered diagnosis detection (0.68 → 0.52) and are kept in `flag.py` as documented negative results; the raw score stays.
 
 What this shows:
 
-- **The model's real skill is meaning.** A diagnosis code paired with another diagnosis is caught at 0.68, the same in all three runs.
-- **Surprise measures familiarity, not truth.** A planted city comes from training data (Columbus) and is familiar; the true city of an unseen hospital is often rare (Grayling). So the wrong record looks *more* normal: 0.21, reliably backwards. The same failure is documented for deep generative models (Nalisnick et al., 2019).
-- **Run 2's two corrections made it worse, and are reported as such.** Skipping the hospital name moved the peak onto the next rare thing, the unseen hospital's city, and diluted the diagnosis signal (0.68 → 0.52). Subtracting the bigram's surprise (a likelihood ratio, after Ren et al., 2019) barely changed that: a character model's notion of "rare" is too coarse to cancel word-level familiarity. The raw score stays the model's flagging score.
-- **Arithmetic is a job for rules.** Swapped payments and an extra digit are near chance for every model score, and a rule catches them every time.
-
-So the tool is a hybrid. `--flag_file` runs rules first (Medicare more than the total; paid more than billed; a bill far beyond the 99.5th percentile of charge-to-payment ratios in training), then ranks everything else by the model's surprise. A wrong city is a lookup, not a language problem: in production it is a check against CMS's hospital register. Run 3 adds a paired test: on the same record, does the planted error raise surprise?
+- **The model notices almost every error; it cannot rank them.** On the same record, an extra digit raises surprise 99% of the time, swapped payments 90%, a mismatched diagnosis 85%. Across records the same errors sit near chance (0.53–0.68), because one hospital's ordinary record can be more surprising than another's corrupted one. The signal is real; the noise is the hospitals. Earlier runs, which measured only ranking, concluded the model "could not see arithmetic". The paired test shows that was wrong: it sees it, it just cannot tell you which record to look at first.
+- **Surprise measures familiarity, not truth.** The wrong city is the one error the model gets backwards in both tests (0.16–0.21): a planted city comes from training data (Columbus) and is familiar; the true city of an unseen hospital is often rare (Grayling). The same failure is documented for deep generative models (Nalisnick et al., 2019). A wrong city is a lookup against CMS's hospital register, not a language problem.
+- **So the tool is a hybrid.** `--flag_file` runs rules first (Medicare more than the total; paid more than billed; a bill beyond the 99.5th percentile of charge-to-payment ratios in training), then ranks the rest by the model's surprise. On the demo file (5 real, 5 planted, shuffled), the rules put the swapped payments and the extra digit at the top, and the model ranked two of the remaining three planted records 2nd and 3rd of 8: four of the top five are planted errors.
 
 ## Design decisions
 
@@ -165,7 +165,7 @@ So the tool is a hybrid. `--flag_file` runs rules first (Medicare more than the 
 - **Characters, not BPE.** Records are short, and a subword tokenizer can merge `$52` into one token and `24` into another, which hides exactly the digit-level errors this project looks for.
 - **Context 271.** The longest record is 269 characters; with its two newlines the model always sees a whole record at once.
 - **The teacher phrases, Python counts.** Small LLMs misstate arithmetic. Every percentage is computed before the LLM sees the record, and every number it writes is checked against the record.
-- **Rules for arithmetic, the model for meaning.** Three runs showed the model catches diagnosis mismatches and not arithmetic or locations, so the flagger runs rules first and the model second.
+- **Rules first, the model second.** The model notices arithmetic errors on a given record but cannot rank them across records; a rule can. Rules take the arithmetic, the model ranks what rules cannot express.
 - **Placeholders for numbers.** A small model writes plausible numbers rather than copying them; placing a placeholder is a task it can learn, and code guarantees the value.
 - **A language model is not a rule engine.** Arithmetic relations such as Medicare ≤ total are cheap to check with a rule. The model's value is the errors no one wrote a rule for. The detection table shows which error types it catches and which still need a rule.
 
