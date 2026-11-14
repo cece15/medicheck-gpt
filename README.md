@@ -67,7 +67,7 @@ pip install -r requirements.txt
 ./gpt.py --flag checkpoints/gpt.pth --flag_file my_records.txt     # rank any file of records, most suspicious first
 ```
 
-Every hyperparameter is a flag (`--n_layer`, `--n_head`, `--n_embd`, `--context_size`, `--dropout`, `--batch_size`, `--lr`, `--warmup`, `--weight_decay`, `--steps`, `--patience`, `--temperature`, `--top_k`). `./gpt.py -h` lists them. `notebooks/run_on_colab.ipynb` runs the whole flow on a free Colab T4.
+Every hyperparameter is a flag (`--n_layer`, `--n_head`, `--n_embd`, `--context_size`, `--dropout`, `--batch_size`, `--lr`, `--warmup`, `--weight_decay`, `--steps`, `--patience`, `--temperature`, `--top_k`). `./gpt.py -h` lists them. `notebooks/run_on_colab.ipynb` runs the whole flow on a free Colab T4. `WALKTHROUGH.md` explains the code step by step, in reading order.
 
 ## Results
 
@@ -91,6 +91,14 @@ Training took 165 seconds. Reloading the saved checkpoint reproduced the same ge
 | Generated records that parse | | |
 | Generated records with the right DRG description | | |
 | Generated records with Medicare ≤ total payment | | |
+
+**Hyperparameter comparison (same data, seed and early stopping).** *To be filled.*
+
+| Model | Layers | Heads | Embedding | Dropout | Parameters | Best validation loss | Validation perplexity |
+|---|---|---|---|---|---|---|---|
+| Small | 2 | 2 | 64 | 0.1 | | | |
+| Base | 4 | 4 | 128 | 0.1 | | | |
+| Large | 6 | 6 | 192 | 0.2 | | | |
 
 **Explaining records (student vs LLM teacher, unseen hospitals).** *To be filled.*
 
