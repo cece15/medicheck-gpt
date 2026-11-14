@@ -102,7 +102,8 @@ Read the files in this order. Each section says what the step does, why it is bu
 
 - **Why characters, not BPE?** Records are short, and the errors live in single digits. A subword tokenizer can merge `$52` into one token and `24` into another, which hides a one-digit change.
 - **Why split by hospital?** A row split puts the same hospital's name and address in both train and test, so the test score would measure memory.
-- **Why did the first run overfit?** 0.85M parameters on 1.6M characters, a constant learning rate, and no stopping rule. Early stopping, weight decay and the cosine schedule answer it; the hyperparameter table shows the effect of model size.
+- **Why did the first run overfit?** 0.85M parameters on 1.6M characters, a constant learning rate, and no stopping rule. Early stopping, weight decay and the cosine schedule answer it.
+- **Does a bigger model help?** Small is clearly worse. Base and large traded places across two runs (0.652 vs 0.621, then 0.635 vs 0.634), so the gain is within noise, and large overfits by step 1,500. With this much data, base is the right size. Running it twice is how you know.
 - **Can the teacher's mistakes leak into the student?** They can, which is why every teacher number is computed in Python and checked before training, and the student is checked the same way.
 - **Why did the student ignore the record in run 1?** Random windows and a loss on every character: copying the record was a small part of what it was graded on. Whole examples, a loss on the explanation only, and a start from the record model fix that.
 - **Why is the wrong-city AUC below 0.5?** Surprise tracks familiarity. A common wrong city is less surprising than a rare true one. The likelihood ratio against the bigram corrects for plain rarity.

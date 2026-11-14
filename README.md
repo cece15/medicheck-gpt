@@ -71,70 +71,70 @@ Every hyperparameter is a flag (`--init_from`, `--n_layer`, `--n_head`, `--n_emb
 
 ## Results
 
-All numbers are from run 1, saved with its outputs as `notebooks/run1_14nov.ipynb` (Colab T4, 14 November 2026). Test set = 20 hospitals never seen in training.
+Run 1 was done twice on a Colab T4 on 14 November 2026, with the same code, data and seeds: `notebooks/run1_14nov.ipynb` (1a) and `notebooks/run1b_14nov.ipynb` (1b). Values are shown as 1a / 1b. The bigram matches exactly; the GPT differs slightly because some GPU operations are not deterministic. The test set is 20 hospitals never seen in training.
 
 ### Language model: bigram vs GPT
 
 | Metric | Bigram | GPT |
 |---|---|---|
 | Parameters | 5,929 | 846,285 |
-| Best validation loss | 2.152 | 0.652 (step 4,000; early stop at 6,000) |
-| Test perplexity | 8.64 | 1.94 |
-| Test next-character accuracy | 32.9% | 85.0% |
-| ROUGE-L, completing real records | 0.004 | 0.723 |
-| BLEU | not run | 0.546 |
-| BERTScore F1 (not rescaled) | not run | 0.963 |
+| Best validation loss | 2.152 / 2.152 | 0.652 / 0.635 (step 4,000; early stop at 6,000) |
+| Test perplexity | 8.64 / 8.64 | 1.94 / 1.95 |
+| Test next-character accuracy | 32.9% / 32.9% | 85.0% / 84.8% |
+| ROUGE-L, completing real records | 0.004 / 0.002 | 0.723 / 0.713 |
+| BLEU | not run | 0.546 / 0.537 |
+| BERTScore F1 (not rescaled) | not run | 0.963 / 0.961 |
 
-The completion prompt includes the DRG code, so part of the ROUGE score is the model recalling the description for a code it was given. Raw BERTScore crowds near 1.0 for any two sentences in the same format; later runs report it rescaled against a baseline.
+The completion prompt includes the DRG code, so part of the ROUGE score is the model recalling the description for a code it was given. Raw BERTScore crowds near 1.0 for any two sentences in the same format; run 2 reports it rescaled against a baseline.
 
 **Fluent is not the same as correct.** Rules that hold for real records, checked on 100 records the GPT wrote from scratch:
 
-| Rule | Real test records | GPT-generated |
+| Rule | Real test records | GPT-generated (1a / 1b) |
 |---|---|---|
-| Parses as a well-formed record | 100% | 91% |
-| DRG code matches its description | 99.7% | **26%** |
-| Medicare payment ≤ total payment | 100% | 71% |
-| Total payment ≤ covered charges | 100% | 80% |
-| Known hospital placed in its real city | n/a (test hospitals are unseen) | 96.8% |
+| Parses as a well-formed record | 100% | 91% / 88% |
+| DRG code matches its description | 99.7% | **26% / 27%** |
+| Medicare payment ≤ total payment | 100% | 71% / 63% |
+| Total payment ≤ covered charges | 100% | 80% / 85% |
+| Known hospital placed in its real city | n/a (test hospitals are unseen) | 96.8% / 92.3% |
 
-Nine in ten generated records look right, and three in four pair a diagnosis code with the wrong diagnosis. That gap is the silent-error problem this project is about. (The 0.3% of real records that fail the DRG rule carry codes absent from the training hospitals.)
+Nine in ten generated records look right, and three in four pair a diagnosis code with the wrong diagnosis, in both runs. That gap is the silent-error problem this project is about. (The 0.3% of real records that fail the DRG rule carry codes absent from the training hospitals.)
 
 ### Model size (same data, seed and early stopping)
 
-| Model | Layers / heads / dim | Dropout | Parameters | Best step | Best validation loss | Validation perplexity |
-|---|---|---|---|---|---|---|
-| Small | 2 / 2 / 64 | 0.1 | 126,989 | 5,000 | 0.716 | 2.05 |
-| Base | 4 / 4 / 128 | 0.1 | 846,285 | 4,000 | 0.652 | 1.92 |
-| Large | 6 / 6 / 192 | 0.2 | 2,747,789 | 1,500 | 0.621 | 1.86 |
+| Model | Layers / heads / dim | Dropout | Parameters | Best step (1a / 1b) | Best validation loss (1a / 1b) |
+|---|---|---|---|---|---|
+| Small | 2 / 2 / 64 | 0.1 | 126,989 | 5,000 / 5,999 | 0.716 / 0.718 |
+| Base | 4 / 4 / 128 | 0.1 | 846,285 | 4,000 / 4,000 | 0.652 / 0.635 |
+| Large | 6 / 6 / 192 | 0.2 | 2,747,789 | 1,500 / 1,500 | 0.621 / 0.634 |
 
-Bigger generalizes better here, and overfits sooner: the large model peaked at step 1,500 even with twice the dropout. A notebook prototype with no schedule and no stopping rule showed the same pattern, which is why training uses early stopping, weight decay and a cosine schedule.
+The small model is clearly worse in both runs. Base and large swap places between runs, so the difference between them is within run-to-run noise: three times the parameters bought no reliable gain on 1.6M characters of training text, and the large model overfit by step 1,500 even with twice the dropout. The base model is the better choice for this much data.
 
 ### Explaining records: what run 1 taught
 
 **The teacher.** Qwen2.5-1.5B-Instruct wrote a sentence for 4,749 records. 15% contained a number that was not in the record and were rejected (2,582 / 814 / 639 kept for train / val / test). The accepted sentences had a subtler fault: real numbers with the wrong label ("received $15,466 from Medicare" when $15,466 was the total; "95% of the charges" when 95% was Medicare's share of the payment). A number check catches invented numbers, not mislabeled ones.
 
-**The student**, trained from scratch on random windows: test perplexity 2.51, ROUGE-L 0.312, BLEU 0.107, BERTScore 0.891 (not rescaled), and **0% of its sentences used the record's numbers**. Given Munson Healthcare Grayling Hospital, it wrote about a hospital in Detroit. It learned how the teacher writes, not to read what it is given.
+**The student**, trained from scratch on random windows (1a / 1b): test perplexity 2.51 / 2.48, ROUGE-L 0.312 / 0.319, BLEU 0.107 / 0.105, BERTScore 0.891 / 0.892 (not rescaled), and **0% of its sentences used the record's numbers in both runs**. Given Munson Healthcare Grayling Hospital, it wrote about a hospital in Detroit. It learned how the teacher writes, not to read what it is given.
 
 **Run 2 (in progress)** fixes both. The teacher gets each fact as a labelled phrase and one example; a second check rejects any number sitting next to the wrong label, and a rejected record gets one retry. The student starts from the record GPT (pre-training) and is fine-tuned on whole examples with the loss on the explanation only (supervised fine-tuning, Lecture 6–7).
 
 | Metric | Run 1 | Run 2 |
 |---|---|---|
 | Teacher sentences rejected | 15% (invented numbers only) | |
-| Student ROUGE-L | 0.312 | |
-| Student BLEU | 0.107 | |
-| Student BERTScore F1 | 0.891 (raw) | (rescaled) |
+| Student ROUGE-L | 0.312 / 0.319 | |
+| Student BLEU | 0.107 / 0.105 | |
+| Student BERTScore F1 | 0.891 / 0.892 (raw) | (rescaled) |
 | Student sentences using only the record's numbers | 0% | |
 
 ### Flagging silent errors: what run 1 taught
 
 ROC AUC on 500 clean test records against the same records with one planted error. 0.5 = chance; below 0.5 = backwards.
 
-| Planted error | Bigram | GPT, mean surprise | GPT, peak surprise |
+| Planted error | Bigram, mean | GPT, mean surprise (1a / 1b) | GPT, peak surprise (1a / 1b) |
 |---|---|---|---|
-| DRG code with another code's description | 0.610 | **0.680** | 0.513 |
-| Hospital moved to another city in its state | 0.469 | **0.226** | 0.288 |
-| Total and Medicare payments swapped | 0.500 | 0.526 | 0.500 |
-| Covered charges with an extra digit | 0.509 | 0.553 | 0.500 |
+| DRG code with another code's description | 0.610 | **0.680 / 0.682** | 0.513 / 0.510 |
+| Hospital moved to another city in its state | 0.469 | **0.226 / 0.210** | 0.288 / 0.316 |
+| Total and Medicare payments swapped | 0.500 | 0.526 / 0.528 | 0.500 / 0.500 |
+| Covered charges with an extra digit | 0.509 | 0.553 / 0.545 | 0.500 / 0.500 |
 
 The GPT catches mismatched diagnoses best, as expected for a model of text. Two results are worth more than a good score:
 
