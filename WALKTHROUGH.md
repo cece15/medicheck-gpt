@@ -1,14 +1,11 @@
-# Walkthrough: how the code flows
+# How the code works
 
-Read the files in this order. Each section says what the step does, why it is built that way, and which lines to look at. Every stage runs from one command in `gpt.py`; the stage headings in `gpt.py` (`# ---- stage 1: data`) match the steps below.
+The project runs as one flow, from the CMS file to a flagged record. Each section below covers one step: what it does, why I built it that way, and where it lives in the code. Every stage runs from one command in `gpt.py`, and the stage headings there (`# ---- stage 1: data`) match the steps here.
 
 ## Step 1. Data — `src/data.py`
 
-**What.** Reads the CMS file, keeps Michigan and Ohio, turns each row into one sentence, and writes `train.txt`, `val.txt` and `test.txt` with one record per line.
+I read the CMS file, keep Michigan and Ohio, turn each row into one sentence, and write `train.txt`, `val.txt` and `test.txt` with one record per line. A language model learns from text, so each row becomes text. The newline between records marks the end of a record: the model learns that a record ends there, and generation stops when it writes one.
 
-**Why.** A language model learns from text, so each row becomes text. The newline between records is the end-of-record marker: the model learns that a record ends there, and generation stops when it writes one.
-
-**Look at.**
 - `to_sentence`: the template. Dollar amounts are rounded to whole dollars, because cents add characters without adding meaning.
 - `split_hospitals`: the split is by hospital, not by row. The 20 test hospitals never appear in training, so the test score measures whether the model learned what a record looks like, not whether it memorized one hospital's lines.
 - `CharTokenizer`: one token per character, 77 in all. Characters the training data never contained (one `j` in the test set) are dropped.
@@ -16,11 +13,8 @@ Read the files in this order. Each section says what the step does, why it is bu
 
 ## Step 1b. LLM teacher — `src/teacher.py`
 
-**What.** An LLM (Qwen2.5-1.5B-Instruct, on the Colab GPU) writes one plain-English sentence per record. The small GPT later learns to write these sentences itself.
+An LLM (Qwen2.5-1.5B-Instruct, on the Colab GPU) writes one plain-English sentence per record, and my small GPT later learns to write these sentences itself. This follows Kacper's suggestion from 3 November to have an LLM make the reference outputs. It is distillation: a large model teaches a small one.
 
-**Why.** Kacper's suggestion (3 Nov): use an LLM to make reference outputs, then train a small model to reproduce them. This is distillation: a large model teaches a small one.
-
-**Look at.**
 - `facts`: Python computes every number, and each fact is handed over as a full phrase ("Medicare paid $14,681"), so the LLM copies the number together with its meaning. `SYSTEM` adds one invented example of the style.
 - `check`: two tests. `numbers_in` rejects any number not in the facts (run 1: 15% of sentences). `wrong_label` rejects a real number next to the wrong word: run 1's teacher wrote "received $15,466 from Medicare" when $15,466 was the total. An LLM writing about money makes the same quiet mistakes the data can, so the teacher is checked like the data.
 - A rejected record gets one retry with sampling; wrong twice, it is left out. Rejection counts go to `teacher_report.json`.
@@ -28,11 +22,9 @@ Read the files in this order. Each section says what the step does, why it is bu
 
 ## Step 2. Models — `src/model.py`
 
-**What.** A bigram baseline and a GPT. Both are adapted from Kacper's notebooks; my changes are marked `change:`.
+A bigram baseline and a GPT, both adapted from Kacper's course notebooks; my changes are marked `change:`. The bigram comes first because it sees only the previous character: if the GPT can't beat it, the GPT has learned nothing.
 
-**Why a bigram first.** It sees only the previous character. If the GPT can't beat it, the GPT has learned nothing.
-
-**The GPT, from the inside out.**
+The GPT, from the inside out:
 - `Head`: one attention head. Query asks "what am I looking for", key says "what do I contain", value is "what I pass on". The scores are divided by the square root of the head size so the softmax doesn't saturate. The `tril` mask stops a character from looking ahead.
 - `MultiHeadAttention`: four heads in parallel; each can follow a different pattern (the DRG code, the city).
 - `FeedForward`: after attention, each position processes what it gathered. The hidden layer is 4× wider, as in GPT-2.
@@ -42,9 +34,7 @@ Read the files in this order. Each section says what the step does, why it is bu
 
 ## Step 3. Training — `src/train.py`
 
-**What.** AdamW, a learning rate that warms up and then follows a cosine curve down, weight decay, gradient clipping, early stopping, and a checkpoint that always holds the best model so far.
-
-**Why.** The first run (14 Nov) overfit: validation loss was best at step 1,500 (0.658) and rose to 0.676 while training loss kept falling. Each piece here answers that.
+AdamW, a learning rate that warms up and then follows a cosine curve down, weight decay, gradient clipping, early stopping, and a checkpoint that always holds the best model so far. My first prototype overfit: validation loss was best at step 1,500 (0.658) and rose to 0.676 while training loss kept falling. Each piece here is there because of that.
 - `lr_at`: small steps while the weights are random, large steps in the middle, small steps at the end.
 - `estimate_loss`: averages 50 batches so one lucky batch can't fool the log.
 - The `patience` logic: if validation hasn't improved for 4 evaluations, stop.
@@ -53,26 +43,23 @@ Read the files in this order. Each section says what the step does, why it is bu
 
 ## Step 3b. Fine-tuning the explainer — `src/data.py`, `src/model.py`
 
-**What happened in run 1.** Trained from scratch on random windows, the student wrote sentences in the teacher's style about the wrong hospital: 0% used the record's numbers. Random windows cut examples in half, and the loss rewarded predicting record text as much as explanation text.
-
-**The fix, as in Lecture 6–7: pre-train, then fine-tune.**
+My first student, trained from scratch on random windows, wrote sentences in the teacher's style about the wrong hospital, and none used the record's numbers. Random windows cut examples in half, and the loss rewarded predicting the record as much as the explanation. So I followed Lecture 6–7: pre-train, then fine-tune.
 - `init_from` (model.py): the student starts from the record GPT, which already knows what records look like. Weights are matched by character, so new characters and the longer context start fresh.
 - `encode_examples` and `get_sft_batch` (data.py): every row is one whole example starting at position 0, and the targets for the record part are -100, which `cross_entropy` skips. The model is graded only on the explanation it writes.
 - Validation loss is therefore explanation-only; it is not comparable with run 1's.
 
-**What happened in run 2.** It now reads the record's style and even its hospital system (Munson Grayling → "Munson Healthcare Otsego Memorial in Gaylord", a sister hospital), but 0% of its numbers were the record's. Under a million parameters, the model fills numbers from memory instead of copying digits.
+The second student picked up the record's style and even its hospital system (for Munson Grayling it wrote about Munson Healthcare Otsego Memorial in Gaylord, a sister hospital), but none of its numbers were the record's. At under a million parameters, the model fills numbers from memory instead of copying digits.
 
 ## Step 3c. Placeholders — `delex` and `relex` in `src/data.py`
 
-**The fix (run 3).** Before training, `delex` swaps the record's own values in the teacher's sentence for placeholders: `{BILL}`, `{TOTAL}`, `{SHARE}`, `{PATIENTS}`, `{HOSPITAL}`, `{CITY}`, `{CONDITION}`. The student learns which placeholder goes where, which is a pattern, not a memory. After generation, `relex` puts the record's real values back. This is delexicalisation (Wen et al., 2015), the standard way data-to-text systems keep numbers faithful.
+Before training, `delex` swaps the record's own values in the teacher's sentence for placeholders: `{BILL}`, `{TOTAL}`, `{SHARE}`, `{PATIENTS}`, `{HOSPITAL}`, `{CITY}`, `{CONDITION}`. The student learns which placeholder goes where, which is a pattern, not a memory. After generation, `relex` puts the record's real values back. This is delexicalisation (Wen et al., 2015), the standard way data-to-text systems keep numbers faithful.
 
-**What to say.** The model decides the sentence; code guarantees the numbers. A malformed placeholder stays visible in the output instead of becoming a wrong number.
+The model decides the sentence and code guarantees the numbers. If the model ever writes a malformed placeholder, it shows up in the output instead of turning into a wrong number.
 
 ## Step 4. Generation — `src/generate.py`
 
-**What.** Loads a checkpoint and writes one character at a time until it writes a newline.
+Generation loads a checkpoint and writes one character at a time until it writes a newline.
 
-**Look at.**
 - `idx[:, -model.context_size:]`: only the last 271 characters fit in the window.
 - `temperature`: below 1 is safer and more repetitive; above 1 is more inventive.
 - `top_k`: only the k most likely characters can be chosen.
@@ -86,44 +73,27 @@ Read the files in this order. Each section says what the step does, why it is bu
 | Token accuracy | How often its top guess for the next character is right. |
 | ROUGE-L, BLEU | Word overlap with the reference. Kacper calls these sanity checks: they rise early, then plateau. |
 | BERTScore | Meaning overlap, so it gives credit for paraphrases. |
-| Record validity | Mine: do generated records follow the rules real ones do (the right description for the DRG code, Medicare ≤ total payment)? |
-| Numbers faithful | Mine: does every number in the student's sentence come from the record it was given? |
+| Record validity | My own check: do generated records follow the rules real ones do (the right description for the DRG code, Medicare ≤ total payment)? |
+| Numbers faithful | My own check: does every number in the student's sentence come from the record it was given? |
 
 `validity_real_test_records` runs the same rules on real records. It is the ceiling: if a rule fails on real data, the rule is wrong, not the model.
 
 ## Step 6. Flagging — `src/flag.py`
 
-**What.** Takes clean records from unseen hospitals, plants one error per record, and asks whether the model finds the corrupted versions more surprising than the clean ones.
+I take clean records from unseen hospitals, plant one error per record, and check whether the model finds the corrupted versions more surprising than the clean ones. The four errors: a DRG code with another code's description, the hospital moved to another city in its state, the total and Medicare payments swapped, and covered charges given an extra zero.
 
-**The four errors.** A DRG code with another code's description; the hospital moved to another city in its state; total and Medicare payments swapped; covered charges given an extra zero.
-
-**The scores.** `char_surprise` (metrics.py) gives the model's surprise at every character. `scores` (flag.py) turns that into three numbers per record:
+Scoring: `char_surprise` (metrics.py) gives the model's surprise at every character. `scores` (flag.py) turns that into three numbers per record:
 - `raw`: mean surprise over the whole record.
 - `cond`: peak surprise over any 8 characters after the hospital name. In run 1 the unseen name was always the peak, so planted errors tied with clean records at exactly 0.5.
 - `ratio`: the same peak, after subtracting the bigram's surprise character by character. In run 1 a wrong but common city looked more normal than a true but rare one (AUC 0.226). The bigram knows only how common characters are; what is left is what the GPT knows about context. This is a likelihood ratio (Ren et al., 2019).
 
-**The result.** ROC AUC: pick one corrupted and one clean record at random; how often does the corrupted one score higher? 0.5 is a coin flip, 1.0 is perfect, below 0.5 is backwards. `auc_ci` resamples 200 times for a 95% interval, so a difference of 0.02 is not mistaken for a finding.
+For ranking I use ROC AUC: pick one corrupted and one clean record at random; how often does the corrupted one score higher? 0.5 is a coin flip, 1.0 is perfect, below 0.5 is backwards. `auc_ci` resamples 200 times for a 95% interval, so a difference of 0.02 is not mistaken for a finding.
 
-**What three runs showed.**
+What the runs showed:
 - Mismatched diagnoses: 0.68 in every run. This is the model's real skill.
 - Wrong city: 0.21, reliably backwards. Surprise tracks familiarity: a common wrong city looks more normal than a rare true one.
 - Swapped payments and an extra digit: chance when *ranking* across records, but the paired test (run 3a) shows the model *notices* them on the same record 90% and 99% of the time. The signal is there; differences between hospitals drown it. A rule catches them every time, so rules go first.
-- Run 2 tried two corrections, scoring after the name (`cond`) and the ratio to the bigram (`ratio`). Both made diagnosis detection worse (0.68 → 0.52), because the next rare thing after the name is the unseen hospital's city. They are reported, not hidden, and `raw` stays the score.
+- Run 2 tried two corrections, scoring after the name (`cond`) and the ratio to the bigram (`ratio`). Both made diagnosis detection worse (0.68 → 0.52), because the next rare thing after the name is the unseen hospital's city. I kept them in the code and the results, and `raw` stays the score.
 - `paired_raw` asks the cleaner question: on the same record, does the error raise surprise? Diagnosis 0.85, payments 0.90, extra digit 0.99, wrong city 0.16.
 
-**The tool, therefore, is a hybrid.** `flag_file` applies rules first (`rule_hits`: Medicare more than the total, paid more than billed, a bill beyond the 99.5th percentile of charge-to-payment ratios), then ranks the rest by the model's surprise. A wrong city needs a lookup against CMS's hospital register, not a language model.
-
-## Questions to expect, and the answers
-
-- **Why characters, not BPE?** Records are short, and the errors live in single digits. A subword tokenizer can merge `$52` into one token and `24` into another, which hides a one-digit change.
-- **Why split by hospital?** A row split puts the same hospital's name and address in both train and test, so the test score would measure memory.
-- **Why did the first run overfit?** 0.85M parameters on 1.6M characters, a constant learning rate, and no stopping rule. Early stopping, weight decay and the cosine schedule answer it.
-- **Does a bigger model help?** Small is clearly worse. Base and large traded places across two runs (0.652 vs 0.621, then 0.635 vs 0.634), so the gain is within noise, and large overfits by step 1,500. With this much data, base is the right size. Running it twice is how you know.
-- **Can the teacher's mistakes leak into the student?** They can, which is why every teacher number is computed in Python and checked before training, and the student is checked the same way.
-- **Why did the student ignore the record in run 1?** Random windows and a loss on every character: copying the record was a small part of what it was graded on. Whole examples, a loss on the explanation only, and a start from the record model fix that.
-- **Can the model see arithmetic errors?** Yes, on a given record: an extra digit raises its surprise 99% of the time. It can't rank them across records, because some hospitals are simply more surprising than others. That is why rules go first.
-- **Why is the wrong-city AUC below 0.5?** Surprise tracks familiarity. A common wrong city is less surprising than a rare true one. I tried correcting it with a likelihood ratio against the bigram; a character model's sense of rarity is too coarse, so it did not help. The real fix is a lookup.
-- **Why placeholders, isn't that cheating?** It is how production data-to-text works. The model's job is the sentence; numbers come from the record, so they cannot be wrong. Without it, the student invented numbers 100% of the time.
-- **Why did the teacher lose a third of the records?** On a first try it attached a real number to the wrong label 44% of the time. I would rather train on fewer correct sentences than more wrong ones.
-- **Is the flagger a replacement for rules?** No. Rules catch what someone thought to write down. The model ranks what no one wrote a rule for, for a person to review.
-- **What would you do next?** More states and years, a KV cache for faster generation, and testing the flagger on real errors, not planted ones.
+So the tool is a hybrid. `flag_file` applies rules first (`rule_hits`: Medicare more than the total, paid more than billed, a bill beyond the 99.5th percentile of charge-to-payment ratios), then ranks the rest by the model's surprise. A wrong city needs a lookup against CMS's hospital register, not a language model.
