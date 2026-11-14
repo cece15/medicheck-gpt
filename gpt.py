@@ -54,7 +54,7 @@ def main():
     p.add_argument('--evaluate', metavar='CKPT', help='perplexity, token accuracy, ROUGE-L, record validity')
     p.add_argument('--flag', metavar='CKPT', help='plant silent errors in test records and measure detection')
     p.add_argument('--flag_file', metavar='TXT', help='with --flag: rank the records in this file instead')
-    # model and training hyperparameters (defaults = the configuration of my first GPT run)
+    # model and training hyperparameters (defaults = the configuration of my first GPT run, 14 Nov)
     p.add_argument('--model', default='gpt', choices=['gpt', 'bigram'])
     p.add_argument('--states', default='MI,OH', help='states to keep when preparing')
     p.add_argument('--n_embd', type=int, default=128)

@@ -6,11 +6,11 @@ Built for the Open Avenues Build Fellowship project *Build, Train, and Deploy a 
 
 ## Why this exists
 
-My first model, trained on Michigan and Ohio hospitals, wrote records that read perfectly and were wrong:
+My first model, trained on Michigan and Ohio hospitals, wrote records that read well and were wrong:
 
-> University Of Michigan Health in Ann Arbor, MI billed DRG 556 (MEDICAL BACK PROBLEMS WITH MCC) for 49 discharges: covered charges $35248, total payment $1109, Medicare payment $5224.
+> University Of Michigan Health in Ann Arbor, MI billed DRG 556 (PATHOLOWERY AND ND URINARY TRACT DIAGNOSES WITH MCC) for 23 discharges: covered charges $35109, total payment $12256, Medicare payment $13593.
 
-DRG 556 in the data is *Signs and Symptoms of Musculoskeletal System and Connective Tissue without MCC*. The record also says Medicare paid more than the total payment. A schema check would pass it: no nulls, the right types, every field filled. That is a **silent error**, and real claims pipelines carry the same kind. I turned the model around: if a model trained on clean records finds a record surprising, the record deserves a second look.
+DRG 556 in the data is *Signs and Symptoms of Musculoskeletal System and Connective Tissue without MCC*, and the record says Medicare paid more than the total payment. In all six records that run generated, the Medicare payment was larger than the total payment. A schema check would pass it: no nulls, the right types, every field filled. That is a **silent error**, and real claims pipelines carry the same kind. I turned the model around: if a model trained on clean records finds a record surprising, the record deserves a second look.
 
 ## The flow
 
@@ -63,12 +63,14 @@ Every hyperparameter is a flag (`--n_layer`, `--n_head`, `--n_embd`, `--context_
 
 ## Results
 
-**First run, 3 November (Colab T4, 3,000 steps, no early stopping).**
+**First run, 14 November (Colab T4, PyTorch 2.14, 3,000 steps, constant learning rate, no early stopping).**
 
 | Model | Parameters | Best validation loss | Note |
 |---|---|---|---|
-| Bigram | 5,929 | 2.094 (step 2,999) | |
-| GPT | 0.85M | 0.660 (step 1,500) | Validation rose to 0.674 by step 2,999 while training fell to 0.283: overfitting. This is why the final run uses early stopping, weight decay and a cosine schedule. |
+| Bigram | 5,929 | 2.094 (step 2,999) | Generates character soup: no record structure. |
+| GPT | 0.85M | 0.665 (step 1,500) | Validation rose to 0.685 by step 2,999 while training fell to 0.284: overfitting. This is why the final run uses early stopping, weight decay and a cosine schedule. |
+
+Training took 165 seconds. Reloading the saved checkpoint reproduced the same generation exactly under a fixed seed.
 
 **Final run.** *To be filled from `notebooks/run_on_colab.ipynb`.*
 
