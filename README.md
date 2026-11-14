@@ -8,9 +8,9 @@ Built for the Open Avenues Build Fellowship project *Build, Train, and Deploy a 
 
 My first model, trained on Michigan and Ohio hospitals, wrote records that read well and were wrong:
 
-> University Of Michigan Health in Ann Arbor, MI billed DRG 556 (PATHOLOWERY AND ND URINARY TRACT DIAGNOSES WITH MCC) for 23 discharges: covered charges $35109, total payment $12256, Medicare payment $13593.
+> Roled Hospital in Trenton, OH billed DRG 880 (SEPTICEMIA OR SEVERE SEPSIS WITHOUT MV >96 HOURS WITHOUT MCC) for 26 discharges: covered charges $18740, total payment $34406, Medicare payment $41082.
 
-DRG 556 in the data is *Signs and Symptoms of Musculoskeletal System and Connective Tissue without MCC*, and the record says Medicare paid more than the total payment. In all six records that run generated, the Medicare payment was larger than the total payment. A schema check would pass it: no nulls, the right types, every field filled. That is a **silent error**, and real claims pipelines carry the same kind. I turned the model around: if a model trained on clean records finds a record surprising, the record deserves a second look.
+DRG 880 in the data is *Acute Adjustment Reaction and Psychosocial Dysfunction*, not sepsis, and the record says Medicare paid more than the total payment. In four of the seven records that run generated, Medicare paid more than the total. A schema check would pass it: no nulls, the right types, every field filled. That is a **silent error**, and real claims pipelines carry the same kind. I turned the model around: if a model trained on clean records finds a record surprising, the record deserves a second look.
 
 The same records are unreadable to most people who pay for them. Following my mentor Kacper Raczy's suggestion, an LLM writes a one-sentence plain-English explanation of each record, and a GPT more than 1,000 times smaller learns to write those explanations itself. Because an LLM writing about numbers is its own source of silent errors, Python computes every number the LLM may use, and any sentence containing a number that is not in the record is thrown out.
 
@@ -38,7 +38,7 @@ Each row becomes one line:
 Trinity Health Livonia Hospital in Livonia, MI billed DRG 057 (DEGENERATIVE NERVOUS SYSTEM DISORDERS WITHOUT MCC) for 21 discharges: covered charges $31729, total payment $13056, Medicare payment $7768.
 ```
 
-The data is public and aggregated (CMS suppresses any hospital–DRG cell with fewer than 11 discharges), so it carries no patient-level information. It is not committed here; `--prepare` builds everything from the CMS file.
+The data is public and aggregated to hospital × DRG averages, so it carries no patient-level information. It is not committed here; `--prepare` builds everything from the CMS file.
 
 ## Usage
 
@@ -76,9 +76,9 @@ Every hyperparameter is a flag (`--n_layer`, `--n_head`, `--n_embd`, `--context_
 | Model | Parameters | Best validation loss | Note |
 |---|---|---|---|
 | Bigram | 5,929 | 2.094 (step 2,999) | Generates character soup: no record structure. |
-| GPT | 0.85M | 0.665 (step 1,500) | Validation rose to 0.685 by step 2,999 while training fell to 0.284: overfitting. This is why the final run uses early stopping, weight decay and a cosine schedule. |
+| GPT | 0.85M | 0.658 (step 1,500) | Validation rose to 0.676 by step 2,999 while training fell to 0.283: overfitting. This is why the final run uses early stopping, weight decay and a cosine schedule. |
 
-Training took 165 seconds. Reloading the saved checkpoint reproduced the same generation exactly under a fixed seed.
+Training took 168 seconds. Reloading the saved checkpoint reproduced the same generation exactly under a fixed seed.
 
 **Final run.** *To be filled from `notebooks/run_on_colab.ipynb`.*
 
@@ -136,6 +136,7 @@ Two states, one year, and aggregated data. A planted error is a stand-in for a r
 
 - Model, bigram baseline and training loop adapted from Kacper Raczy's course notebooks (`baseline.ipynb`, `transformer.ipynb`), which follow Andrej Karpathy's [nanoGPT](https://github.com/karpathy/nanoGPT) lectures. Changes are marked in `src/model.py`.
 - Teacher model: Qwen2.5-1.5B-Instruct (Qwen team, Alibaba), via Hugging Face `transformers`. Teacher–student training follows Hinton, Vinyals and Dean, *Distilling the Knowledge in a Neural Network*, 2015; the LLM-reference approach was Kacper Raczy's recommendation for this dataset.
+- [Transformer Explainer](https://poloclub.github.io/transformer-explainer/) (Georgia Tech Polo Club), shared in the course, for the attention walkthrough.
 - Vaswani et al., *Attention Is All You Need*, 2017.
 - Evaluation metrics as taught in the course (Lecture 6–7); BLEU and BERTScore through Hugging Face [`evaluate`](https://github.com/huggingface/evaluate).
 - Data: Centers for Medicare & Medicaid Services.

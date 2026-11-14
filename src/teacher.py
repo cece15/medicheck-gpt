@@ -37,18 +37,19 @@ def prompt(fx):
     return f'Facts:\n{lines}\n\nWrite the sentence.'
 
 
+def numbers_in(text):
+    """Every number in a piece of text as a value, so '057', '57' and '$57.00' all count as 57."""
+    return {float(n.replace(',', '')) for n in re.findall(r'\d[\d,]*(?:\.\d+)?', text)}
+
+
 def allowed_numbers(fx):
     """The only numbers a correct sentence can contain."""
-    nums = set()
-    for v in fx.values():
-        nums.update(n.replace(',', '') for n in re.findall(r'\d[\d,]*', str(v)))
-    return nums
+    return numbers_in(' '.join(str(v) for v in fx.values()))
 
 
 def check(sentence, fx):
     """Reject a sentence that invents a number, runs to several sentences, or forgets the condition."""
-    used = {n.replace(',', '') for n in re.findall(r'\d[\d,]*', sentence)}
-    if not used <= allowed_numbers(fx):
+    if not numbers_in(sentence) <= allowed_numbers(fx):
         return 'invented_number'
     if '\n' in sentence or ' || ' in sentence:
         return 'format'

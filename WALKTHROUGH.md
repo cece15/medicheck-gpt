@@ -43,7 +43,7 @@ Read the files in this order. Each section says what the step does, why it is bu
 
 **What.** AdamW, a learning rate that warms up and then follows a cosine curve down, weight decay, gradient clipping, early stopping, and a checkpoint that always holds the best model so far.
 
-**Why.** The first run (14 Nov) overfit: validation loss was best at step 1,500 (0.665) and rose to 0.685 while training loss kept falling. Each piece here answers that.
+**Why.** The first run (14 Nov) overfit: validation loss was best at step 1,500 (0.658) and rose to 0.676 while training loss kept falling. Each piece here answers that.
 - `lr_at`: small steps while the weights are random, large steps in the middle, small steps at the end.
 - `estimate_loss`: averages 50 batches so one lucky batch can't fool the log.
 - The `patience` logic: if validation hasn't improved for 4 evaluations, stop.

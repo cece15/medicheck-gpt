@@ -117,11 +117,10 @@ def describe_eval(model, tok, pairs, device, n=100, temperature=0.8, use_hf=Fals
 
 def numbers_faithful(pairs_out):
     """Share of student descriptions whose numbers all appear in the record it was given: did it copy or invent?"""
-    import re
+    from .teacher import numbers_in
     ok = 0
     for rec, _, pred in pairs_out:
-        nums = {n.replace(',', '') for n in re.findall(r'\d[\d,]*', pred)}
-        ok += nums <= {n.replace(',', '') for n in re.findall(r'\d[\d,]*', rec)} | _derived(rec)
+        ok += numbers_in(pred) <= numbers_in(rec) | _derived(rec)
     return ok / len(pairs_out)
 
 
@@ -130,7 +129,7 @@ def _derived(rec):
     f = parse(rec)
     if not f or not int(f['t']) or not int(f['c']):
         return set()
-    return {str(round(100 * int(f['m']) / int(f['t']))), str(round(100 * int(f['t']) / int(f['c'])))}
+    return {float(round(100 * int(f['m']) / int(f['t']))), float(round(100 * int(f['t']) / int(f['c'])))}
 
 
 def known_facts(train_records):

@@ -128,6 +128,7 @@ def main():
         if args.model == 'gpt':
             config.update(n_embd=args.n_embd, context_size=args.context_size, n_head=args.n_head,
                           n_layer=args.n_layer, dropout=args.dropout)
+        torch.manual_seed(args.seed)                              # same starting weights on every run
         model = build(args.model, **config).to(device)
         print(f'{args.model}: {count_params(model) / 1e6:.2f}M parameters | vocab {len(tok)} | '
               f'train {len(train_data):,} chars | val {len(val_data):,} chars')
@@ -138,7 +139,7 @@ def main():
             if task == 'explain':
                 return {'val_rougeL': M.describe_eval(m, tok, val_recs, device, n=8)[0]['rougeL']}
             gens = [complete(m, tok, '', 300, 0.8, None, device) for _ in range(8)]
-            return {'gen_valid': M.validity(gens, {}, {})['medicare_le_total_payment']}
+            return {'gen_medicare_le_total': M.validity(gens, {}, {})['medicare_le_total_payment']}
 
         train(model, tok, train_data, val_data, args, config, args.train, device,
               log_path=args.train.replace('.pth', '_history.json'),  # bigram batches use --context_size
@@ -185,7 +186,7 @@ def main():
         gen_scores, pairs = M.completion_eval(model, tok, test_recs, device, use_hf=args.hf_metrics)
         drg_map, place_map = M.known_facts(train_recs)
         torch.manual_seed(args.seed)
-        free = [complete(model, tok, '', args.max_new, args.temperature, None, device) for _ in range(200)]
+        free = [complete(model, tok, '', args.max_new, args.temperature, None, device) for _ in range(100)]
         report = {'model': ck['kind'], 'test_perplexity': round(ppl, 3), 'test_token_accuracy': round(acc, 3),
                   **{k: round(v, 3) for k, v in gen_scores.items()},
                   'validity_generated': M.validity(free, drg_map, place_map),
