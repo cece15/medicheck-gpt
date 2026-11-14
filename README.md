@@ -12,7 +12,7 @@ My first model, trained on Michigan and Ohio hospitals, wrote records that read 
 
 DRG 556 in the data is *Signs and Symptoms of Musculoskeletal System and Connective Tissue without MCC*, and the record says Medicare paid more than the total payment. In all six records that run generated, the Medicare payment was larger than the total payment. A schema check would pass it: no nulls, the right types, every field filled. That is a **silent error**, and real claims pipelines carry the same kind. I turned the model around: if a model trained on clean records finds a record surprising, the record deserves a second look.
 
-The same records are unreadable to most people who pay for them. Following my mentor Kacper Raczy's suggestion, an LLM writes a one-sentence plain-English explanation of each record, and a 1,000-times-smaller GPT learns to write those explanations itself. Because an LLM writing about numbers is its own source of silent errors, Python computes every number the LLM may use, and any sentence containing a number that is not in the record is thrown out.
+The same records are unreadable to most people who pay for them. Following my mentor Kacper Raczy's suggestion, an LLM writes a one-sentence plain-English explanation of each record, and a GPT more than 1,000 times smaller learns to write those explanations itself. Because an LLM writing about numbers is its own source of silent errors, Python computes every number the LLM may use, and any sentence containing a number that is not in the record is thrown out.
 
 ## The flow
 
