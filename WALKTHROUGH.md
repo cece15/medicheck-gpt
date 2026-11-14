@@ -21,8 +21,9 @@ Read the files in this order. Each section says what the step does, why it is bu
 **Why.** Kacper's suggestion (3 Nov): use an LLM to make reference outputs, then train a small model to reproduce them. This is distillation: a large model teaches a small one.
 
 **Look at.**
-- `facts`: Python computes every number (Medicare's share of the payment, the share of the bill that was paid). The LLM only words the sentence.
-- `check`: rejects any sentence that contains a number not in the facts. An LLM writing about money makes the same quiet mistakes the data can, so the teacher is checked too. The rejection count is reported.
+- `facts`: Python computes every number, and each fact is handed over as a full phrase ("Medicare paid $14,681"), so the LLM copies the number together with its meaning. `SYSTEM` adds one invented example of the style.
+- `check`: two tests. `numbers_in` rejects any number not in the facts (run 1: 15% of sentences). `wrong_label` rejects a real number next to the wrong word: run 1's teacher wrote "received $15,466 from Medicare" when $15,466 was the total. An LLM writing about money makes the same quiet mistakes the data can, so the teacher is checked like the data.
+- A rejected record gets one retry with sampling; wrong twice, it is left out. Rejection counts go to `teacher_report.json`.
 - Output line format: `record || sentence`. The ` || ` separator tells the student where the record ends and the explanation begins.
 
 ## Step 2. Models — `src/model.py`
@@ -49,6 +50,15 @@ Read the files in this order. Each section says what the step does, why it is bu
 - The `patience` logic: if validation hasn't improved for 4 evaluations, stop.
 - `on_eval`: perplexity and ROUGE-L (or record validity) are reported at every evaluation, from inside the loop. Kacper asked for this on 10 Nov.
 - `save`: the checkpoint stores the weights, the architecture, the vocabulary and the training settings, so `--eval` can rebuild the exact model.
+
+## Step 3b. Fine-tuning the explainer — `src/data.py`, `src/model.py`
+
+**What happened in run 1.** Trained from scratch on random windows, the student wrote sentences in the teacher's style about the wrong hospital: 0% used the record's numbers. Random windows cut examples in half, and the loss rewarded predicting record text as much as explanation text.
+
+**The fix, as in Lecture 6–7: pre-train, then fine-tune.**
+- `init_from` (model.py): the student starts from the record GPT, which already knows what records look like. Weights are matched by character, so new characters and the longer context start fresh.
+- `encode_examples` and `get_sft_batch` (data.py): every row is one whole example starting at position 0, and the targets for the record part are -100, which `cross_entropy` skips. The model is graded only on the explanation it writes.
+- Validation loss is therefore explanation-only; it is not comparable with run 1's.
 
 ## Step 4. Generation — `src/generate.py`
 
@@ -79,11 +89,14 @@ Read the files in this order. Each section says what the step does, why it is bu
 
 **The four errors.** A DRG code with another code's description; the hospital moved to another city in its state; total and Medicare payments swapped; covered charges given an extra zero.
 
-**The score.** `record_scores` in `metrics.py` returns two numbers per record: the mean surprise over the whole line, and the peak surprise over any 8-character stretch. One wrong field shows up in the peak.
+**The scores.** `char_surprise` (metrics.py) gives the model's surprise at every character. `scores` (flag.py) turns that into three numbers per record:
+- `raw`: mean surprise over the whole record.
+- `cond`: peak surprise over any 8 characters after the hospital name. In run 1 the unseen name was always the peak, so planted errors tied with clean records at exactly 0.5.
+- `ratio`: the same peak, after subtracting the bigram's surprise character by character. In run 1 a wrong but common city looked more normal than a true but rare one (AUC 0.226). The bigram knows only how common characters are; what is left is what the GPT knows about context. This is a likelihood ratio (Ren et al., 2019).
 
-**The result.** ROC AUC: pick one corrupted and one clean record at random; how often does the corrupted one score higher? 0.5 is a coin flip; 1.0 is perfect.
+**The result.** ROC AUC: pick one corrupted and one clean record at random; how often does the corrupted one score higher? 0.5 is a coin flip, 1.0 is perfect, below 0.5 is backwards. `auc_ci` resamples 200 times for a 95% interval, so a difference of 0.02 is not mistaken for a finding.
 
-**What to expect, honestly.** The model should catch mismatches between words (code and description) better than arithmetic (the swapped payments), which a one-line rule catches anyway. Whichever way it comes out is the finding.
+**What run 1 showed.** Mismatched diagnoses: 0.68, the model's strength. Arithmetic (swapped payments): chance, a job for a one-line rule.
 
 ## Questions to expect, and the answers
 
@@ -91,5 +104,7 @@ Read the files in this order. Each section says what the step does, why it is bu
 - **Why split by hospital?** A row split puts the same hospital's name and address in both train and test, so the test score would measure memory.
 - **Why did the first run overfit?** 0.85M parameters on 1.6M characters, a constant learning rate, and no stopping rule. Early stopping, weight decay and the cosine schedule answer it; the hyperparameter table shows the effect of model size.
 - **Can the teacher's mistakes leak into the student?** They can, which is why every teacher number is computed in Python and checked before training, and the student is checked the same way.
+- **Why did the student ignore the record in run 1?** Random windows and a loss on every character: copying the record was a small part of what it was graded on. Whole examples, a loss on the explanation only, and a start from the record model fix that.
+- **Why is the wrong-city AUC below 0.5?** Surprise tracks familiarity. A common wrong city is less surprising than a rare true one. The likelihood ratio against the bigram corrects for plain rarity.
 - **Is the flagger a replacement for rules?** No. Rules catch what someone thought to write down. The model ranks what no one wrote a rule for, for a person to review.
 - **What would you do next?** More states and years, a KV cache for faster generation, and testing the flagger on real errors, not planted ones.

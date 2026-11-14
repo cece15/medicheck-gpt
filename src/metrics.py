@@ -20,10 +20,10 @@ from .generate import complete
 
 
 @torch.no_grad()
-def record_scores(model, tok, records, device, batch=64):
-    """Per-record surprise. For each record returns (mean NLL per char, peak NLL over any 8-char window).
-    The mean says "this whole line is odd"; the peak says "one spot in this line is odd", which is
-    what a single wrong field looks like. This function is the engine of the error flagger."""
+def char_surprise(model, tok, records, device, batch=64):
+    """For each record, the model's surprise (negative log-likelihood) at every character, as a 1-D tensor.
+    Position k is the surprise at character k of the record (plus the closing newline).
+    This is the engine of the error flagger."""
     model.eval()
     nl, ctx, out = tok.stoi['\n'], model.context_size, []
     for i in range(0, len(records), batch):
@@ -39,10 +39,19 @@ def record_scores(model, tok, records, device, batch=64):
         logits, _ = model(x.to(device))
         nll = F.cross_entropy(logits.transpose(1, 2), y.to(device), ignore_index=-100, reduction='none').cpu()
         for j, s in enumerate(seqs):
-            v = nll[j, :len(s) - 1]
-            w = v.unfold(0, 8, 1).mean(1) if len(v) >= 8 else v   # sliding 8-character windows
-            out.append((v.mean().item(), w.max().item()))
+            out.append(nll[j, :len(s) - 1])
     return out
+
+
+def peak(v, width=8):
+    """Highest average surprise over any `width` consecutive characters: one wrong field looks like this."""
+    return (v.unfold(0, width, 1).mean(1) if len(v) >= width else v).max().item()
+
+
+def after_name(record):
+    """Index where the hospital name ends. Everything before it is skipped when flagging: an unseen
+    hospital's name is new to the model, and new is not the same as wrong."""
+    return record.index(' in ') if ' in ' in record else 0
 
 
 @torch.no_grad()
@@ -91,7 +100,8 @@ def completion_eval(model, tok, test_records, device, n=100, temperature=0.8, us
     if use_hf:                                                    # optional extras from Hugging Face
         import evaluate
         out['bleu'] = evaluate.load('bleu').compute(predictions=preds, references=[[r] for r in refs])['bleu']
-        bs = evaluate.load('bertscore').compute(predictions=preds, references=refs, lang='en')
+        bs = evaluate.load('bertscore').compute(predictions=preds, references=refs, lang='en',
+                                                rescale_with_baseline=True)   # raw BERTScore crowds into 0.85-1.0
         out['bertscore_f1'] = sum(bs['f1']) / len(bs['f1'])
     return out, list(zip(refs, preds))
 
@@ -110,7 +120,8 @@ def describe_eval(model, tok, pairs, device, n=100, temperature=0.8, use_hf=Fals
     if use_hf:
         import evaluate
         out['bleu'] = evaluate.load('bleu').compute(predictions=preds, references=[[r] for r in refs])['bleu']
-        bs = evaluate.load('bertscore').compute(predictions=preds, references=refs, lang='en')
+        bs = evaluate.load('bertscore').compute(predictions=preds, references=refs, lang='en',
+                                                rescale_with_baseline=True)   # raw BERTScore crowds into 0.85-1.0
         out['bertscore_f1'] = sum(bs['f1']) / len(bs['f1'])
     return out, list(zip(recs, refs, preds))
 

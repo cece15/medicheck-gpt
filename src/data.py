@@ -88,6 +88,33 @@ def get_batch(data, batch_size, context_size, device):
     return x.to(device), y.to(device)
 
 
+# ---- Supervised fine-tuning batches (explain task) --------------------------------------------
+# Random windows (get_batch) cut examples in half and train on the record text as much as on the
+# explanation. For fine-tuning, each row is one whole example starting at position 0, and the loss
+# counts only the explanation: the model is graded on what it writes, not on the record it was given.
+
+def encode_examples(pair_lines, tok):
+    """'record || explanation' -> (token ids, length of the part the model is given)."""
+    out = []
+    for line in pair_lines:
+        rec, desc = line.split(' || ', 1)
+        given = tok.encode('\n' + rec + ' || ')
+        out.append((given + tok.encode(desc + '\n'), len(given)))   # ends with newline = end of explanation
+    return out
+
+
+def get_sft_batch(examples, batch_size, device, pad_id):
+    """Pad a random batch of whole examples. Targets are -100 (ignored by the loss) on the record part."""
+    pick = [examples[i] for i in torch.randint(len(examples), (batch_size,))]
+    T = max(len(ids) for ids, _ in pick) - 1
+    x = torch.full((batch_size, T), pad_id, dtype=torch.long)
+    y = torch.full((batch_size, T), -100, dtype=torch.long)
+    for j, (ids, n_given) in enumerate(pick):
+        x[j, :len(ids) - 1] = torch.tensor(ids[:-1])
+        y[j, n_given - 1:len(ids) - 1] = torch.tensor(ids[n_given:])  # grade only the explanation characters
+    return x.to(device), y.to(device)
+
+
 # ---- Parsing a record back into fields (used by the validity check and the error injector) ----
 RECORD_RE = re.compile(
     r'^(?P<name>.+) in (?P<city>.+), (?P<state>[A-Z]{2}) billed DRG (?P<drg>\d{3}) '

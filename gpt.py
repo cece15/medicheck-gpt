@@ -9,13 +9,13 @@ One command per stage of the flow:
   ./gpt.py --input data/raw/MUP_INP_RY26_P03_V10_DY24_PrvSvc.CSV --prepare data/processed
   ./gpt.py --input data/processed --train checkpoints/bigram.pth --model bigram --context_size 8 --lr 1e-2 --steps 3000
   ./gpt.py --input data/processed --train checkpoints/gpt.pth --steps 10000
-  ./gpt.py --input data/processed --teacher data/described --limit 3000
-  ./gpt.py --input data/described --train checkpoints/explain.pth --steps 10000
+  ./gpt.py --input data/processed --teacher data/described --limit 5000
+  ./gpt.py --input data/described --train checkpoints/explain.pth --init_from checkpoints/gpt.pth --steps 4000
   ./gpt.py --eval checkpoints/explain.pth --prompt "<paste a record>"
   ./gpt.py --eval checkpoints/gpt.pth --prompt "Trinity Health Livonia Hospital in Livonia, MI billed DRG "
   ./gpt.py --eval checkpoints/gpt.pth --interactive
   ./gpt.py --input data/processed --evaluate checkpoints/gpt.pth
-  ./gpt.py --input data/processed --flag checkpoints/gpt.pth
+  ./gpt.py --input data/processed --flag checkpoints/gpt.pth --background checkpoints/bigram.pth
 """
 import argparse
 import json
@@ -27,7 +27,7 @@ from src import data as D
 from src import flag as FL
 from src import metrics as M
 from src.generate import complete, load
-from src.model import build, count_params
+from src.model import build, count_params, init_from
 from src.train import train
 
 
@@ -55,14 +55,16 @@ def main():
     p.add_argument('--prepare', metavar='OUT_DIR', help='CSV -> train/val/test text, split by hospital')
     p.add_argument('--teacher', metavar='OUT_DIR', help='LLM writes a plain-English description for each record')
     p.add_argument('--teacher_model', default=None, help='Hugging Face model id for the teacher')
-    p.add_argument('--limit', type=int, default=3000, help='max training records sent to the teacher')
+    p.add_argument('--limit', type=int, default=5000, help='max training records sent to the teacher (0 = all)')
     p.add_argument('--train', metavar='CKPT', help='train a model and save the best checkpoint here')
     p.add_argument('--eval', metavar='CKPT', help='generate: complete --prompt, or chat with --interactive')
     p.add_argument('--evaluate', metavar='CKPT', help='perplexity, token accuracy, ROUGE-L, record validity')
     p.add_argument('--flag', metavar='CKPT', help='plant silent errors in test records and measure detection')
     p.add_argument('--flag_file', metavar='TXT', help='with --flag: rank the records in this file instead')
+    p.add_argument('--background', metavar='CKPT', help='with --flag: bigram checkpoint for the likelihood ratio')
     # model and training hyperparameters (defaults = the configuration of my first GPT run, 14 Nov)
     p.add_argument('--model', default='gpt', choices=['gpt', 'bigram'])
+    p.add_argument('--init_from', metavar='CKPT', help='start from a trained record model (pre-train -> fine-tune)')
     p.add_argument('--states', default='MI,OH', help='states to keep when preparing')
     p.add_argument('--n_embd', type=int, default=128)
     p.add_argument('--n_head', type=int, default=4)
@@ -103,8 +105,8 @@ def main():
         summary = {}
         for split in ['train', 'val', 'test']:
             recs = records(read_split(args.input, split))
-            if split == 'train':
-                recs = recs[:args.limit]                          # the teacher is the slow part; cap training examples
+            if split == 'train' and args.limit:
+                recs = recs[:args.limit]                          # 0 = all                          # the teacher is the slow part; cap training examples
             pairs, rejected = write_descriptions(recs, args.teacher_model or DEFAULT_TEACHER, device=device)
             open(os.path.join(args.teacher, f'{split}.txt'), 'w').write('\n' + '\n'.join(pairs) + '\n')
             summary[split] = {'records': len(recs), 'kept': len(pairs), 'rejected': rejected}
@@ -116,10 +118,10 @@ def main():
     # ---- stage 2-3: train ---------------------------------------------------------------------
     if args.train:
         train_text, val_text = read_split(args.input, 'train'), read_split(args.input, 'val')
-        tok = D.CharTokenizer(train_text)                         # vocabulary comes from training data only
-        train_data = torch.tensor(tok.encode(train_text), dtype=torch.long)
-        val_data = torch.tensor(tok.encode(val_text), dtype=torch.long)
         task = 'explain' if ' || ' in train_text else 'record'    # pairs file -> explain task
+        src = torch.load(args.init_from, map_location='cpu') if args.init_from else None
+        vocab_text = train_text + (''.join(src['stoi']) if src else '')
+        tok = D.CharTokenizer(vocab_text)                         # training characters (+ the pre-trained model's)
         longest = max(len(r) for r in records(train_text)) + 2
         if args.model == 'gpt' and args.context_size < longest:     # the window must hold one whole example
             print(f'context_size {args.context_size} -> {longest} so one full example fits')
@@ -128,20 +130,39 @@ def main():
         if args.model == 'gpt':
             config.update(n_embd=args.n_embd, context_size=args.context_size, n_head=args.n_head,
                           n_layer=args.n_layer, dropout=args.dropout)
+        if src:                                                   # architecture must match the pre-trained model
+            for k in ('n_embd', 'n_head', 'n_layer'):
+                config[k] = src['config'][k]
         torch.manual_seed(args.seed)                              # same starting weights on every run
         model = build(args.model, **config).to(device)
-        print(f'{args.model}: {count_params(model) / 1e6:.2f}M parameters | vocab {len(tok)} | '
-              f'train {len(train_data):,} chars | val {len(val_data):,} chars')
+        if src:
+            n = init_from(model, src, tok.stoi)
+            print(f'started from {args.init_from}: {n} weight tensors copied')
+
+        if task == 'explain':                                     # whole examples, loss on the explanation only
+            tr, va = D.encode_examples(records(train_text), tok), D.encode_examples(records(val_text), tok)
+            pad = tok.stoi['\n']
+            batchers = {'train': lambda: D.get_sft_batch(tr, args.batch_size, device, pad),
+                        'val': lambda: D.get_sft_batch(va, args.batch_size, device, pad)}
+            sizes = f'{len(tr):,} train / {len(va):,} val examples'
+        else:                                                     # random windows over the running text
+            train_data = torch.tensor(tok.encode(train_text), dtype=torch.long)
+            val_data = torch.tensor(tok.encode(val_text), dtype=torch.long)
+            batchers = {'train': lambda: D.get_batch(train_data, args.batch_size, args.context_size, device),
+                        'val': lambda: D.get_batch(val_data, args.batch_size, args.context_size, device)}
+            sizes = f'train {len(train_data):,} chars | val {len(val_data):,} chars'
+        print(f'{args.model} ({task}): {count_params(model) / 1e6:.2f}M parameters | vocab {len(tok)} | {sizes}')
         os.makedirs(os.path.dirname(args.train) or '.', exist_ok=True)
         val_recs = records(val_text)
 
         def on_eval(m):                                           # metrics reported from inside the training loop
             if task == 'explain':
-                return {'val_rougeL': M.describe_eval(m, tok, val_recs, device, n=8)[0]['rougeL']}
+                scores, pairs = M.describe_eval(m, tok, val_recs, device, n=8)
+                return {'val_rougeL': scores['rougeL'], 'val_numbers_faithful': M.numbers_faithful(pairs)}
             gens = [complete(m, tok, '', 300, 0.8, None, device) for _ in range(8)]
             return {'gen_medicare_le_total': M.validity(gens, {}, {})['medicare_le_total_payment']}
 
-        train(model, tok, train_data, val_data, args, config, args.train, device,
+        train(model, tok, batchers, args, config, args.train,
               log_path=args.train.replace('.pth', '_history.json'),  # bigram batches use --context_size
               task=task, on_eval=on_eval if args.model == 'gpt' else None)
         return
@@ -199,15 +220,18 @@ def main():
     # ---- stage 6: flag silent errors ----------------------------------------------------------
     if args.flag:
         model, tok, ck = load(args.flag, device)
+        bg = load(args.background, device)[0] if args.background else None   # bigram as the background model
         if args.flag_file:                                        # real use on any file of records
-            for score, rec in FL.flag_file(model, tok, records(open(args.flag_file).read()), device):
+            for score, rec in FL.flag_file(model, tok, records(open(args.flag_file).read()), device, background=bg):
                 print(f'{score:6.2f}  {rec}')
             return
         res, ex = FL.run(model, tok, records(read_split(args.input, 'test')),
-                         records(read_split(args.input, 'train')), device, args.seed)
-        print(f"{'error type':<18}{'n':>5}{'AUC mean':>10}{'AUC peak':>10}")
+                         records(read_split(args.input, 'train')), device, args.seed, background=bg)
+        cols = [k for k in next(iter(res.values())) if k.startswith('auc_')]
+        ci = [k for k in next(iter(res.values())) if k.startswith('ci_')][0]
+        print(f"{'error type':<18}{'n':>5}" + ''.join(f'{c:>11}' for c in cols) + f'{"95% CI":>16}')
         for k, v in res.items():
-            print(f"{k:<18}{v['n']:>5}{v['auc_mean']:>10}{v['auc_peak']:>10}")
+            print(f"{k:<18}{v['n']:>5}" + ''.join(f'{v[c]:>11}' for c in cols) + f'{str(v[ci]):>16}')
         print('\nexample planted errors:')
         for k, e in ex.items():
             print(f'  {k}: {e}')

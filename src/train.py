@@ -8,18 +8,15 @@ import time
 
 import torch
 
-from .data import get_batch
-
-
 @torch.no_grad()
-def estimate_loss(model, data, batch_size, context_size, device, iters=50):
+def estimate_loss(model, batchers, iters=50):
     """Average loss over many random batches, so one lucky batch cannot fool us."""
     model.eval()                                                  # dropout off while measuring
     out = {}
-    for split, d in data.items():
+    for split, next_batch in batchers.items():
         losses = torch.zeros(iters)
         for k in range(iters):
-            xb, yb = get_batch(d, batch_size, context_size, device)
+            xb, yb = next_batch()
             losses[k] = model(xb, yb)[1].item()
         out[split] = losses.mean().item()
     model.train()                                                 # back to training mode
@@ -34,13 +31,12 @@ def lr_at(step, max_steps, lr, warmup):
     return lr * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
 
 
-def train(model, tok, train_data, val_data, args, config, ckpt_path, device, log_path=None, task='record', on_eval=None):
+def train(model, tok, batchers, args, config, ckpt_path, log_path=None, task='record', on_eval=None):
     """Train, log every eval_every steps, keep the best checkpoint, stop when val stops improving.
     on_eval: optional function(model) -> dict of extra metrics, run at every evaluation (Kacper, 10 Nov:
     report evaluation metrics periodically from inside the training loop)."""
     torch.manual_seed(args.seed)                                  # reproducible batches and dropout
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    ctx = config.get('context_size', args.context_size)
     best, bad_evals, history, t0 = float('inf'), 0, [], time.time()
 
     for step in range(args.steps):
@@ -48,7 +44,7 @@ def train(model, tok, train_data, val_data, args, config, ckpt_path, device, log
             g['lr'] = lr_at(step, args.steps, args.lr, args.warmup)
 
         if step % args.eval_every == 0 or step == args.steps - 1:
-            l = estimate_loss(model, {'train': train_data, 'val': val_data}, args.batch_size, ctx, device)
+            l = estimate_loss(model, batchers)
             l['val_perplexity'] = math.exp(l['val'])                 # perplexity = exp(cross-entropy)
             if on_eval:
                 l.update(on_eval(model))                              # e.g. ROUGE-L on a few validation examples
@@ -64,7 +60,7 @@ def train(model, tok, train_data, val_data, args, config, ckpt_path, device, log
                     print(f'early stop at step {step}: val has not improved for {args.patience} evaluations')
                     break
 
-        xb, yb = get_batch(train_data, args.batch_size, ctx, device)
+        xb, yb = batchers['train']()
         _, loss = model(xb, yb)                                   # forward: how wrong are we?
         opt.zero_grad(set_to_none=True)
         loss.backward()                                           # backward: which way should each weight move?

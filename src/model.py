@@ -110,10 +110,35 @@ def _loss(logits, targets):
     if targets is None:
         return None
     B, T, C = logits.shape
-    return F.cross_entropy(logits.view(B * T, C), targets.view(B * T))
+    return F.cross_entropy(logits.view(B * T, C), targets.view(B * T))   # targets of -100 are skipped
 
 
 MODELS = {'bigram': BigramLanguageModel, 'gpt': GPT}
+
+
+def init_from(model, ck, stoi):
+    """Copy a trained record model into a new model whose vocabulary or context is larger.
+    Every weight that fits is copied; rows for new characters and new positions keep their random start.
+    This is the pre-training -> fine-tuning step from Lecture 6-7."""
+    src, dst = ck['model_state'], model.state_dict()
+    copied = 0
+    for name, w in src.items():
+        if name not in dst or name.endswith('tril'):
+            continue                                                         # masks are rebuilt for the new context
+        if name in ('token_embedding_table.weight', 'lm_head.weight', 'lm_head.bias'):
+            for ch, i in ck['stoi'].items():                                 # match characters by name, not index
+                if ch in stoi:
+                    dst[name][stoi[ch]] = w[i]
+        elif name == 'position_embedding_table.weight':
+            n = min(len(w), len(dst[name]))
+            dst[name][:n] = w[:n]                                            # first 271 positions carry over
+        elif w.shape == dst[name].shape:
+            dst[name] = w
+        else:
+            continue
+        copied += 1
+    model.load_state_dict(dst)
+    return copied
 
 
 def build(kind, **config):
