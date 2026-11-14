@@ -60,6 +60,14 @@ Read the files in this order. Each section says what the step does, why it is bu
 - `encode_examples` and `get_sft_batch` (data.py): every row is one whole example starting at position 0, and the targets for the record part are -100, which `cross_entropy` skips. The model is graded only on the explanation it writes.
 - Validation loss is therefore explanation-only; it is not comparable with run 1's.
 
+**What happened in run 2.** It now reads the record's style and even its hospital system (Munson Grayling → "Munson Healthcare Otsego Memorial in Gaylord", a sister hospital), but 0% of its numbers were the record's. Under a million parameters, the model fills numbers from memory instead of copying digits.
+
+## Step 3c. Placeholders — `delex` and `relex` in `src/data.py`
+
+**The fix (run 3).** Before training, `delex` swaps the record's own values in the teacher's sentence for placeholders: `{BILL}`, `{TOTAL}`, `{SHARE}`, `{PATIENTS}`, `{HOSPITAL}`, `{CITY}`, `{CONDITION}`. The student learns which placeholder goes where, which is a pattern, not a memory. After generation, `relex` puts the record's real values back. This is delexicalisation (Wen et al., 2015), the standard way data-to-text systems keep numbers faithful.
+
+**What to say.** The model decides the sentence; code guarantees the numbers. A malformed placeholder stays visible in the output instead of becoming a wrong number.
+
 ## Step 4. Generation — `src/generate.py`
 
 **What.** Loads a checkpoint and writes one character at a time until it writes a newline.
@@ -96,7 +104,14 @@ Read the files in this order. Each section says what the step does, why it is bu
 
 **The result.** ROC AUC: pick one corrupted and one clean record at random; how often does the corrupted one score higher? 0.5 is a coin flip, 1.0 is perfect, below 0.5 is backwards. `auc_ci` resamples 200 times for a 95% interval, so a difference of 0.02 is not mistaken for a finding.
 
-**What run 1 showed.** Mismatched diagnoses: 0.68, the model's strength. Arithmetic (swapped payments): chance, a job for a one-line rule.
+**What three runs showed.**
+- Mismatched diagnoses: 0.68 in every run. This is the model's real skill.
+- Wrong city: 0.21, reliably backwards. Surprise tracks familiarity: a common wrong city looks more normal than a rare true one.
+- Swapped payments and an extra digit: chance. A rule catches them every time.
+- Run 2 tried two corrections, scoring after the name (`cond`) and the ratio to the bigram (`ratio`). Both made diagnosis detection worse (0.68 → 0.52), because the next rare thing after the name is the unseen hospital's city. They are reported, not hidden, and `raw` stays the score.
+- `paired_raw` (run 3) asks the cleaner question: on the same record, does the error raise surprise?
+
+**The tool, therefore, is a hybrid.** `flag_file` applies rules first (`rule_hits`: Medicare more than the total, paid more than billed, a bill beyond the 99.5th percentile of charge-to-payment ratios), then ranks the rest by the model's surprise. A wrong city needs a lookup against CMS's hospital register, not a language model.
 
 ## Questions to expect, and the answers
 
@@ -106,6 +121,8 @@ Read the files in this order. Each section says what the step does, why it is bu
 - **Does a bigger model help?** Small is clearly worse. Base and large traded places across two runs (0.652 vs 0.621, then 0.635 vs 0.634), so the gain is within noise, and large overfits by step 1,500. With this much data, base is the right size. Running it twice is how you know.
 - **Can the teacher's mistakes leak into the student?** They can, which is why every teacher number is computed in Python and checked before training, and the student is checked the same way.
 - **Why did the student ignore the record in run 1?** Random windows and a loss on every character: copying the record was a small part of what it was graded on. Whole examples, a loss on the explanation only, and a start from the record model fix that.
-- **Why is the wrong-city AUC below 0.5?** Surprise tracks familiarity. A common wrong city is less surprising than a rare true one. The likelihood ratio against the bigram corrects for plain rarity.
+- **Why is the wrong-city AUC below 0.5?** Surprise tracks familiarity. A common wrong city is less surprising than a rare true one. I tried correcting it with a likelihood ratio against the bigram; a character model's sense of rarity is too coarse, so it did not help. The real fix is a lookup.
+- **Why placeholders, isn't that cheating?** It is how production data-to-text works. The model's job is the sentence; numbers come from the record, so they cannot be wrong. Without it, the student invented numbers 100% of the time.
+- **Why did the teacher lose a third of the records?** On a first try it attached a real number to the wrong label 44% of the time. I would rather train on fewer correct sentences than more wrong ones.
 - **Is the flagger a replacement for rules?** No. Rules catch what someone thought to write down. The model ranks what no one wrote a rule for, for a person to review.
 - **What would you do next?** More states and years, a KV cache for faster generation, and testing the flagger on real errors, not planted ones.

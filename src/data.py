@@ -115,6 +115,43 @@ def get_sft_batch(examples, batch_size, device, pad_id):
     return x.to(device), y.to(device)
 
 
+# ---- Delexicalization (run 3) -------------------------------------------------------------------
+# Run 2 showed a sub-1M-parameter model does not copy numbers from its input: it writes believable
+# numbers from memory. Data-to-text systems solve this by not asking the model to copy at all:
+# values become placeholders for training, the model learns where each placeholder goes, and code
+# puts the real value back. (Wen et al., 2015, "Semantically Conditioned LSTM-based Natural Language
+# Generation for Spoken Dialogue Systems", call this delexicalisation.)
+
+def _values(f):
+    """Placeholder -> the exact text the teacher used for it."""
+    c, t, m = int(f['c']), int(f['t']), int(f['m'])
+    return {'{BILL}': f'${c:,}', '{TOTAL}': f'${t:,}', '{MEDICARE}': f'${m:,}',
+            '{SHARE}': f'{round(100 * m / t)}%' if t else None,
+            '{HOSPITAL}': f['name'], '{CITY}': f['city'], '{CONDITION}': f['desc'].lower()}
+
+
+def delex(record, sentence):
+    """Replace the record's own values in the teacher's sentence with placeholders."""
+    f = parse(record)
+    if f is None:
+        return sentence
+    for slot, value in _values(f).items():                         # hospital before city: names often contain the city
+        if value:
+            sentence = re.sub(re.escape(value), slot, sentence, flags=re.IGNORECASE)
+    sentence = re.sub(rf"\b{f['n']}\b(?= (Medicare )?patients)", '{PATIENTS}', sentence)
+    return sentence
+
+
+def relex(record, sentence):
+    """Put the record's real values back into a sentence the model wrote with placeholders."""
+    f = parse(record)
+    if f is None:
+        return sentence
+    for slot, value in {**_values(f), '{PATIENTS}': f['n']}.items():
+        sentence = sentence.replace(slot, value or '')
+    return sentence
+
+
 # ---- Parsing a record back into fields (used by the validity check and the error injector) ----
 RECORD_RE = re.compile(
     r'^(?P<name>.+) in (?P<city>.+), (?P<state>[A-Z]{2}) billed DRG (?P<drg>\d{3}) '

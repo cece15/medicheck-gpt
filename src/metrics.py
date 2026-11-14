@@ -106,7 +106,37 @@ def completion_eval(model, tok, test_records, device, n=100, temperature=0.8, us
     return out, list(zip(refs, preds))
 
 
-def describe_eval(model, tok, pairs, device, n=100, temperature=0.8, use_hf=False):
+@torch.no_grad()
+def explain_perplexity(model, tok, pairs, device):
+    """Perplexity and next-character accuracy on the explanation only: the part the student is trained
+    to write. (Run 2 reported 33.8 because it also scored the record, which the student never learns.)"""
+    from .data import encode_examples
+    model.eval()
+    nll, correct, n = 0.0, 0, 0
+    for ids, given in encode_examples(pairs, tok):
+        ids = ids[:model.context_size + 1]
+        x = torch.tensor([ids[:-1]], device=device)
+        y = torch.tensor(ids[1:], device=device)
+        logits = model(x)[0][0][given - 1:]                      # predictions for the explanation characters
+        nll += F.cross_entropy(logits, y[given - 1:], reduction='sum').item()
+        correct += (logits.argmax(-1) == y[given - 1:]).sum().item()
+        n += len(y) - (given - 1)
+    return math.exp(nll / n), correct / n
+
+
+def student_checks(triples):
+    """Hold the student to the teacher's standard: the share of its sentences that pass the same
+    invented-number and wrong-label checks, and that name the record's own hospital or city."""
+    from .teacher import check, facts
+    passed, right_place = 0, 0
+    for rec, _, pred in triples:
+        f = parse(rec)
+        passed += check(pred, facts(f)) is None
+        right_place += f['name'].lower() in pred.lower() or f['city'].lower() in pred.lower()
+    return passed / len(triples), right_place / len(triples)
+
+
+def describe_eval(model, tok, pairs, device, n=100, temperature=0.8, use_hf=False, delexed=False):
     """Kacper's task: give the student a record, let it write the description, compare with the teacher's.
     Here BLEU / ROUGE / BERTScore have a real reference to compare against."""
     preds, refs, recs = [], [], []
@@ -114,7 +144,11 @@ def describe_eval(model, tok, pairs, device, n=100, temperature=0.8, use_hf=Fals
         rec, ref = p.split(' || ', 1)
         recs.append(rec)
         prompt = rec + ' || '
-        preds.append(complete(model, tok, prompt, max_new=400, temperature=temperature, device=device)[len(prompt):])
+        pred = complete(model, tok, prompt, max_new=400, temperature=temperature, device=device)[len(prompt):]
+        if delexed:                                               # placeholders -> the record's real values
+            from .data import relex
+            pred, ref = relex(rec, pred), relex(rec, ref)
+        preds.append(pred)
         refs.append(ref)
     out = {'rougeL': sum(rouge_l(a, b) for a, b in zip(preds, refs)) / len(refs)}
     if use_hf:

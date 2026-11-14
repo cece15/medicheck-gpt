@@ -1,6 +1,6 @@
 # MediCheck-GPT
 
-Small character-level GPTs, built from scratch in PyTorch and trained on CMS Medicare inpatient hospital records. They do three jobs: explain a billing record in plain English (learned from an LLM teacher), write records in the CMS format, and flag records that are well-formed but wrong.
+Small character-level GPTs, built from scratch in PyTorch and trained on CMS Medicare inpatient hospital records. They do three jobs: explain a billing record in plain English (learned from an LLM teacher), write records in the CMS format, and, with simple rules, flag records that are well-formed but wrong.
 
 Built for the Open Avenues Build Fellowship project *Build, Train, and Deploy a Transformer Language Model in PyTorch* (Kacper Raczy), Fall 2026.
 
@@ -26,7 +26,7 @@ The same records are unreadable to most people who pay for them. Following my me
 | 5. Train | AdamW, cosine learning rate with warmup, weight decay, early stopping, best checkpoint kept; perplexity, ROUGE-L and record validity reported at every evaluation | `src/train.py` |
 | 6. Generate | Temperature and top-k sampling; stops when the model ends the record | `src/generate.py` |
 | 7. Evaluate | Perplexity, token accuracy, ROUGE-L, BLEU, BERTScore against the teacher's sentences; record validity; whether the student's numbers come from the record | `src/metrics.py` |
-| 8. Flag | Plant four kinds of silent error in unseen hospitals' records; score surprise after the hospital name, relative to the bigram; ROC AUC with 95% intervals | `src/flag.py` |
+| 8. Flag | Plant four kinds of silent error in unseen hospitals' records; measure ROC AUC with 95% intervals and a paired test; for real files, rules first, then the model's surprise | `src/flag.py` |
 
 ## Data
 
@@ -54,8 +54,8 @@ pip install -r requirements.txt
 
 # 2b. teacher writes descriptions, student learns them
 ./gpt.py --input data/processed --teacher data/described --limit 5000
-./gpt.py --input data/described --train checkpoints/explain.pth --init_from checkpoints/gpt.pth --steps 4000
-./gpt.py --eval checkpoints/explain.pth --interactive            # paste a record, get a sentence
+./gpt.py --input data/described --train checkpoints/explain.pth --init_from checkpoints/gpt.pth --delex --steps 4000
+./gpt.py --eval checkpoints/explain.pth --interactive --temperature 0.5            # paste a record, get a sentence
 
 # 3. generate
 ./gpt.py --eval checkpoints/gpt.pth --prompt "Trinity Health Livonia Hospital in Livonia, MI billed DRG "
@@ -64,84 +64,100 @@ pip install -r requirements.txt
 # 4. evaluate and flag
 ./gpt.py --input data/processed --evaluate checkpoints/gpt.pth --hf_metrics
 ./gpt.py --input data/processed --flag checkpoints/gpt.pth --background checkpoints/bigram.pth
-./gpt.py --flag checkpoints/gpt.pth --flag_file my_records.txt     # rank any file of records, most suspicious first
+./gpt.py --input data/processed --flag checkpoints/gpt.pth --flag_file my_records.txt   # rules first, then the model's ranking
 ```
 
-Every hyperparameter is a flag (`--init_from`, `--n_layer`, `--n_head`, `--n_embd`, `--context_size`, `--dropout`, `--batch_size`, `--lr`, `--warmup`, `--weight_decay`, `--steps`, `--patience`, `--temperature`, `--top_k`). `./gpt.py -h` lists them. `notebooks/run_on_colab.ipynb` runs the whole flow on a free Colab T4. `WALKTHROUGH.md` explains the code step by step, in reading order.
+Every hyperparameter is a flag (`--init_from`, `--delex`, `--n_layer`, `--n_head`, `--n_embd`, `--context_size`, `--dropout`, `--batch_size`, `--lr`, `--warmup`, `--weight_decay`, `--steps`, `--patience`, `--temperature`, `--top_k`). `./gpt.py -h` lists them. `notebooks/run_on_colab.ipynb` runs the whole flow on a free Colab T4. `WALKTHROUGH.md` explains the code step by step, in reading order.
 
 ## Results
 
-Run 1 was done twice on a Colab T4 on 14 November 2026, with the same code, data and seeds: `notebooks/run1_14nov.ipynb` (1a) and `notebooks/run1b_14nov.ipynb` (1b). Values are shown as 1a / 1b. The bigram matches exactly; the GPT differs slightly because some GPU operations are not deterministic. The test set is 20 hospitals never seen in training.
+Three runs on a Colab T4, 14 November 2026, each saved with its outputs: `notebooks/run1_14nov.ipynb` (1a), `notebooks/run1b_14nov.ipynb` (1b, a repeat of 1a) and `notebooks/run2_14nov.ipynb` (2). The base GPT was trained three times with the same settings and seed; ranges below are across those trainings (GPU arithmetic is not perfectly deterministic). The bigram matched exactly every time. Test set: 20 hospitals never seen in training.
 
 ### Language model: bigram vs GPT
 
-| Metric | Bigram | GPT |
+| Metric | Bigram | GPT (range over 3 trainings) |
 |---|---|---|
 | Parameters | 5,929 | 846,285 |
-| Best validation loss | 2.152 / 2.152 | 0.652 / 0.635 (step 4,000; early stop at 6,000) |
-| Test perplexity | 8.64 / 8.64 | 1.94 / 1.95 |
-| Test next-character accuracy | 32.9% / 32.9% | 85.0% / 84.8% |
-| ROUGE-L, completing real records | 0.004 / 0.002 | 0.723 / 0.713 |
-| BLEU | not run | 0.546 / 0.537 |
-| BERTScore F1 (not rescaled) | not run | 0.963 / 0.961 |
+| Best validation loss | 2.152 | 0.635 – 0.652 |
+| Test perplexity | 8.64 | 1.94 – 1.96 |
+| Test next-character accuracy | 32.9% | 84.8% – 85.0% |
+| ROUGE-L, completing real records | 0.002 – 0.004 | 0.713 – 0.725 |
+| BLEU | not run | 0.537 – 0.551 |
+| BERTScore F1 | not run | 0.961 – 0.963 raw; 0.796 rescaled (run 2) |
 
-The completion prompt includes the DRG code, so part of the ROUGE score is the model recalling the description for a code it was given. Raw BERTScore crowds near 1.0 for any two sentences in the same format; run 2 reports it rescaled against a baseline.
+The completion prompt includes the DRG code, so part of the ROUGE score is the model recalling the description for a code it was given. Raw BERTScore crowds near 1.0 for any two sentences in the same format, which is why run 2 rescales it.
 
 **Fluent is not the same as correct.** Rules that hold for real records, checked on 100 records the GPT wrote from scratch:
 
-| Rule | Real test records | GPT-generated (1a / 1b) |
+| Rule | Real test records | GPT-generated (range over 3 runs) |
 |---|---|---|
-| Parses as a well-formed record | 100% | 91% / 88% |
-| DRG code matches its description | 99.7% | **26% / 27%** |
-| Medicare payment ≤ total payment | 100% | 71% / 63% |
-| Total payment ≤ covered charges | 100% | 80% / 85% |
-| Known hospital placed in its real city | n/a (test hospitals are unseen) | 96.8% / 92.3% |
+| Parses as a well-formed record | 100% | 88% – 96% |
+| DRG code matches its description | 99.7% | **26% – 40%** |
+| Medicare payment ≤ total payment | 100% | 63% – 80% |
+| Total payment ≤ covered charges | 100% | 80% – 85% |
+| Known hospital placed in its real city | n/a (test hospitals are unseen) | 92% – 97% |
 
-Nine in ten generated records look right, and three in four pair a diagnosis code with the wrong diagnosis, in both runs. That gap is the silent-error problem this project is about. (The 0.3% of real records that fail the DRG rule carry codes absent from the training hospitals.)
+Nearly every generated record looks right, and most pair a diagnosis code with the wrong diagnosis. That gap is the silent-error problem this project is about. (The 0.3% of real records that fail the DRG rule carry codes absent from the training hospitals.)
 
 ### Model size (same data, seed and early stopping)
 
-| Model | Layers / heads / dim | Dropout | Parameters | Best step (1a / 1b) | Best validation loss (1a / 1b) |
-|---|---|---|---|---|---|
-| Small | 2 / 2 / 64 | 0.1 | 126,989 | 5,000 / 5,999 | 0.716 / 0.718 |
-| Base | 4 / 4 / 128 | 0.1 | 846,285 | 4,000 / 4,000 | 0.652 / 0.635 |
-| Large | 6 / 6 / 192 | 0.2 | 2,747,789 | 1,500 / 1,500 | 0.621 / 0.634 |
+| Model | Layers / heads / dim | Dropout | Parameters | Best validation loss, each training |
+|---|---|---|---|---|
+| Small | 2 / 2 / 64 | 0.1 | 126,989 | 0.716, 0.718, 0.743 |
+| Base | 4 / 4 / 128 | 0.1 | 846,285 | 0.652, 0.635, 0.640 |
+| Large | 6 / 6 / 192 | 0.2 | 2,747,789 | 0.621, 0.634 |
 
-The small model is clearly worse in both runs. Base and large swap places between runs, so the difference between them is within run-to-run noise: three times the parameters bought no reliable gain on 1.6M characters of training text, and the large model overfit by step 1,500 even with twice the dropout. The base model is the better choice for this much data.
+Small is clearly worse. Base and large overlap across trainings, so three times the parameters bought no reliable gain on 1.6M characters, and the large model overfit by step 1,500 even with twice the dropout. Base is the right size for this much data. One training would have suggested otherwise; repeating it is how this was caught.
 
-### Explaining records: what run 1 taught
+### Explaining records: three attempts
 
-**The teacher.** Qwen2.5-1.5B-Instruct wrote a sentence for 4,749 records. 15% contained a number that was not in the record and were rejected (2,582 / 814 / 639 kept for train / val / test). The accepted sentences had a subtler fault: real numbers with the wrong label ("received $15,466 from Medicare" when $15,466 was the total; "95% of the charges" when 95% was Medicare's share of the payment). A number check catches invented numbers, not mislabeled ones.
+**The teacher (Qwen2.5-1.5B-Instruct).**
 
-**The student**, trained from scratch on random windows (1a / 1b): test perplexity 2.51 / 2.48, ROUGE-L 0.312 / 0.319, BLEU 0.107 / 0.105, BERTScore 0.891 / 0.892 (not rescaled), and **0% of its sentences used the record's numbers in both runs**. Given Munson Healthcare Grayling Hospital, it wrote about a hospital in Detroit. It learned how the teacher writes, not to read what it is given.
-
-**Run 2 (in progress)** fixes both. The teacher gets each fact as a labelled phrase and one example; a second check rejects any number sitting next to the wrong label, and a rejected record gets one retry. The student starts from the record GPT (pre-training) and is fine-tuned on whole examples with the loss on the explanation only (supervised fine-tuning, Lecture 6–7).
-
-| Metric | Run 1 | Run 2 |
+| | Run 1 | Run 2 |
 |---|---|---|
-| Teacher sentences rejected | 15% (invented numbers only) | |
-| Student ROUGE-L | 0.312 / 0.319 | |
-| Student BLEU | 0.107 / 0.105 | |
-| Student BERTScore F1 | 0.891 / 0.892 (raw) | (rescaled) |
-| Student sentences using only the record's numbers | 0% | |
+| How facts were given | labelled values | full phrases plus one example sentence |
+| Checks | invented numbers | invented numbers and numbers next to the wrong label |
+| First-attempt sentences with an invented number | 15% | 19% |
+| First-attempt sentences with a mislabeled number | not checked | 44% |
+| Records kept (after one retry in run 2) | 85% | 66% (3,328 train / 594 val / 518 test) |
 
-### Flagging silent errors: what run 1 taught
+Run 1's accepted sentences were fluent and often wrong ("received $15,466 from Medicare" when $15,466 was the total). Run 2's check showed how often: on a first attempt, a 1.5B model attached a real number to the wrong label in 44% of sentences. Every sentence used for training now passes both checks. The cost is a third of the records, and the kept set may lean toward records that are easier to describe.
+
+**The student (0.89M parameters).**
+
+| | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| Training | from scratch, random windows | from the record GPT, whole examples, loss on the explanation only | as run 2, with the record's values as placeholders |
+| ROUGE-L vs teacher | 0.312 / 0.319 | 0.438 | |
+| BLEU | 0.107 / 0.105 | 0.217 | |
+| BERTScore F1 | 0.891 / 0.892 raw | 0.513 rescaled | |
+| Sentences using only the record's numbers | 0% | 0% | |
+| Sentences passing the teacher's own checks | | | |
+| Sentences naming the record's hospital or city | | | |
+
+Run 1 learned the teacher's style and ignored the record. Run 2 reads it partly: for Munson Healthcare Grayling Hospital it wrote about Munson Healthcare Otsego Memorial in Gaylord, the same health system thirty miles away, with numbers of the right size that were not the record's. A model under a million parameters fills a sentence from memory rather than copying digits from its input; the explainer reproduced the very silent error the project studies. Run 3 stops asking it to copy: the teacher's numbers, hospital, city and condition become placeholders for training, the student learns where each goes, and code puts the record's values back. This is delexicalisation (Wen et al., 2015), the standard way data-to-text systems keep numbers faithful.
+
+(Run 2's evaluation reported a test perplexity of 33.8. That was a measurement error: it scored the record text, which the fine-tuned student is never trained to predict. Run 3 measures perplexity on the explanation only.)
+
+### Flagging silent errors
 
 ROC AUC on 500 clean test records against the same records with one planted error. 0.5 = chance; below 0.5 = backwards.
 
-| Planted error | Bigram, mean | GPT, mean surprise (1a / 1b) | GPT, peak surprise (1a / 1b) |
-|---|---|---|---|
-| DRG code with another code's description | 0.610 | **0.680 / 0.682** | 0.513 / 0.510 |
-| Hospital moved to another city in its state | 0.469 | **0.226 / 0.210** | 0.288 / 0.316 |
-| Total and Medicare payments swapped | 0.500 | 0.526 / 0.528 | 0.500 / 0.500 |
-| Covered charges with an extra digit | 0.509 | 0.553 / 0.545 | 0.500 / 0.500 |
+| Planted error | Bigram, raw | GPT raw (runs 1a / 1b / 2) | GPT, after name (2) | GPT, ratio to bigram (2), 95% CI |
+|---|---|---|---|---|
+| DRG code with another code's description | 0.610 | **0.680 / 0.682 / 0.677** | 0.521 | 0.525 (0.49–0.56) |
+| Hospital moved to another city in its state | 0.469 | 0.226 / 0.210 / 0.208 | 0.139 | 0.147 (0.13–0.17) |
+| Total and Medicare payments swapped | 0.500 | 0.526 / 0.528 / 0.529 | 0.507 | 0.514 (0.48–0.55) |
+| Covered charges with an extra digit | 0.509 | 0.553 / 0.545 / 0.542 | 0.513 | 0.523 (0.49–0.56) |
 
-The GPT catches mismatched diagnoses best, as expected for a model of text. Two results are worth more than a good score:
+What this shows:
 
-- **A wrong city scored less suspicious than the right one (0.226).** Planted cities come from training data, so they are familiar (Columbus); true cities of unseen hospitals are often rare (Grayling). Raw surprise measures familiarity, not correctness, the same failure Nalisnick et al. (2019) found in deep generative models.
-- **Peak surprise tied at exactly 0.5** because every record's most surprising stretch is the name of a hospital the model has never seen, so the planted error never became the peak.
+- **The model's real skill is meaning.** A diagnosis code paired with another diagnosis is caught at 0.68, the same in all three runs.
+- **Surprise measures familiarity, not truth.** A planted city comes from training data (Columbus) and is familiar; the true city of an unseen hospital is often rare (Grayling). So the wrong record looks *more* normal: 0.21, reliably backwards. The same failure is documented for deep generative models (Nalisnick et al., 2019).
+- **Run 2's two corrections made it worse, and are reported as such.** Skipping the hospital name moved the peak onto the next rare thing, the unseen hospital's city, and diluted the diagnosis signal (0.68 → 0.52). Subtracting the bigram's surprise (a likelihood ratio, after Ren et al., 2019) barely changed that: a character model's notion of "rare" is too coarse to cancel word-level familiarity. The raw score stays the model's flagging score.
+- **Arithmetic is a job for rules.** Swapped payments and an extra digit are near chance for every model score, and a rule catches them every time.
 
-**Run 2 (in progress)** scores only what follows the hospital name, and divides out plain rarity by subtracting the bigram's surprise (a likelihood ratio, after Ren et al., 2019), with 95% bootstrap intervals. Arithmetic errors (swapped payments) remain a job for a one-line rule, and the project says so.
+So the tool is a hybrid. `--flag_file` runs rules first (Medicare more than the total; paid more than billed; a bill far beyond the 99.5th percentile of charge-to-payment ratios in training), then ranks everything else by the model's surprise. A wrong city is a lookup, not a language problem: in production it is a check against CMS's hospital register. Run 3 adds a paired test: on the same record, does the planted error raise surprise?
 
 ## Design decisions
 
@@ -149,7 +165,8 @@ The GPT catches mismatched diagnoses best, as expected for a model of text. Two 
 - **Characters, not BPE.** Records are short, and a subword tokenizer can merge `$52` into one token and `24` into another, which hides exactly the digit-level errors this project looks for.
 - **Context 271.** The longest record is 269 characters; with its two newlines the model always sees a whole record at once.
 - **The teacher phrases, Python counts.** Small LLMs misstate arithmetic. Every percentage is computed before the LLM sees the record, and every number it writes is checked against the record.
-- **Surprise is scored after the hospital name, against a background.** An unseen name is new, not wrong; and a rare true value is not an error. Subtracting the bigram's surprise leaves what the GPT knows about context.
+- **Rules for arithmetic, the model for meaning.** Three runs showed the model catches diagnosis mismatches and not arithmetic or locations, so the flagger runs rules first and the model second.
+- **Placeholders for numbers.** A small model writes plausible numbers rather than copying them; placing a placeholder is a task it can learn, and code guarantees the value.
 - **A language model is not a rule engine.** Arithmetic relations such as Medicare ≤ total are cheap to check with a rule. The model's value is the errors no one wrote a rule for. The detection table shows which error types it catches and which still need a rule.
 
 ## Limitations
@@ -161,6 +178,7 @@ Two states, one year, and aggregated data. A planted error is a stand-in for a r
 - Model, bigram baseline and training loop adapted from Kacper Raczy's course notebooks (`baseline.ipynb`, `transformer.ipynb`), which follow Andrej Karpathy's [nanoGPT](https://github.com/karpathy/nanoGPT) lectures. Changes are marked in `src/model.py`.
 - Teacher model: Qwen2.5-1.5B-Instruct (Qwen team, Alibaba), via Hugging Face `transformers`. Teacher–student training follows Hinton, Vinyals and Dean, *Distilling the Knowledge in a Neural Network*, 2015; the LLM-reference approach was Kacper Raczy's recommendation for this dataset.
 - [Transformer Explainer](https://poloclub.github.io/transformer-explainer/) (Georgia Tech Polo Club), shared in the course, for the attention walkthrough.
+- Wen et al., *Semantically Conditioned LSTM-based Natural Language Generation for Spoken Dialogue Systems*, EMNLP 2015 (delexicalisation).
 - Nalisnick et al., *Do Deep Generative Models Know What They Don't Know?*, ICLR 2019; Ren et al., *Likelihood Ratios for Out-of-Distribution Detection*, NeurIPS 2019.
 - Vaswani et al., *Attention Is All You Need*, 2017.
 - Evaluation metrics as taught in the course (Lecture 6–7); BLEU and BERTScore through Hugging Face [`evaluate`](https://github.com/huggingface/evaluate).

@@ -115,21 +115,48 @@ def run(model, tok, test_records, train_records, device, seed=1337, n=500, backg
     keys = list(clean_s[0])
     results, examples = {}, {}
     for kind in KINDS:
-        bad = [b for b in (corrupt(r, kind, drg_map, cities, rng) for r in clean) if b]
-        bad_s = scores(model, tok, bad, device, background)
-        res = {'n': len(bad)}
+        twins = [(i, corrupt(r, kind, drg_map, cities, rng)) for i, r in enumerate(clean)]
+        twins = [(i, b) for i, b in twins if b]
+        bad_s = scores(model, tok, [b for _, b in twins], device, background)
+        res = {'n': len(twins)}
         for k in keys:
             res[f'auc_{k}'] = round(auc([s[k] for s in bad_s], [s[k] for s in clean_s]), 3)
-        best = keys[-1]                                           # the most corrected score available
-        res[f'ci_{best}'] = auc_ci([s[best] for s in bad_s], [s[best] for s in clean_s])
+        res['ci_raw'] = auc_ci([s['raw'] for s in bad_s], [s['raw'] for s in clean_s])
+        # paired: does the error raise surprise on the SAME record? Removes "this hospital is just unusual"
+        res['paired_raw'] = round(sum((b['raw'] > clean_s[i]['raw']) + 0.5 * (b['raw'] == clean_s[i]['raw'])
+                                      for (i, _), b in zip(twins, bad_s)) / len(twins), 3)
         results[kind] = res
-        examples[kind] = bad[0] if bad else None
+        examples[kind] = twins[0][1] if twins else None
     return results, examples
 
 
-def flag_file(model, tok, records, device, top=10, background=None):
-    """Real use: score every record in a file and return the most surprising ones for a human to check."""
-    s = scores(model, tok, records, device, background)
-    key = 'ratio' if background is not None else 'cond'
-    ranked = sorted(zip(s, records), key=lambda t: -t[0][key])    # worst first
-    return [(round(sc[key], 2), r) for sc, r in ranked[:top]]
+def rule_hits(record, ratio_limit):
+    """Arithmetic checks a rule does better than any language model."""
+    f = parse(record)
+    if f is None:
+        return ['not a well-formed record']
+    c, t, m = int(f['c']), int(f['t']), int(f['m'])
+    hits = []
+    if m > t:
+        hits.append('Medicare paid more than the total')
+    if t > c:
+        hits.append('paid more than was billed')
+    if t and c / t > ratio_limit:
+        hits.append(f'bill is {c / t:.0f}x the payment')
+    return hits
+
+
+def charge_ratio_limit(train_records, q=0.995):
+    """The charge-to-payment ratio that 99.5% of training records stay under."""
+    r = sorted(int(f['c']) / int(f['t']) for f in map(parse, train_records) if f and int(f['t']))
+    return r[int(q * (len(r) - 1))]
+
+
+def flag_file(model, tok, records, device, train_records, top=10):
+    """Real use. Rules first (arithmetic), then the model's surprise for everything rules can't see.
+    Raw surprise is used because it was the best model score for diagnosis mismatches in runs 1 and 2."""
+    limit = charge_ratio_limit(train_records)
+    s = scores(model, tok, records, device)
+    rows = [(rule_hits(r, limit), sc['raw'], r) for sc, r in zip(s, records)]
+    ranked = sorted(rows, key=lambda t: (-len(t[0]), -t[1]))       # rule hits on top, then most surprising
+    return ranked[:top]

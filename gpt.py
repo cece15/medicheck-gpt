@@ -48,6 +48,15 @@ def records(text):
     return [r for r in text.split('\n') if r]                     # one record per non-empty line
 
 
+def delex_text(text):
+    """Apply delex to every 'record || sentence' line."""
+    out = []
+    for line in records(text):
+        rec, sent = line.split(' || ', 1)
+        out.append(f'{rec} || {D.delex(rec, sent)}')
+    return '\n' + '\n'.join(out) + '\n'
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     # what to do (pick one)
@@ -65,6 +74,7 @@ def main():
     # model and training hyperparameters (defaults = the configuration of my first GPT run, 14 Nov)
     p.add_argument('--model', default='gpt', choices=['gpt', 'bigram'])
     p.add_argument('--init_from', metavar='CKPT', help='start from a trained record model (pre-train -> fine-tune)')
+    p.add_argument('--delex', action='store_true', help='explain task: train on placeholders, fill real values after')
     p.add_argument('--states', default='MI,OH', help='states to keep when preparing')
     p.add_argument('--n_embd', type=int, default=128)
     p.add_argument('--n_head', type=int, default=4)
@@ -119,6 +129,8 @@ def main():
     if args.train:
         train_text, val_text = read_split(args.input, 'train'), read_split(args.input, 'val')
         task = 'explain' if ' || ' in train_text else 'record'    # pairs file -> explain task
+        if args.delex:                                            # values -> placeholders before training
+            train_text, val_text = (delex_text(t) for t in (train_text, val_text))
         src = torch.load(args.init_from, map_location='cpu') if args.init_from else None
         vocab_text = train_text + (''.join(src['stoi']) if src else '')
         tok = D.CharTokenizer(vocab_text)                         # training characters (+ the pre-trained model's)
@@ -157,14 +169,18 @@ def main():
 
         def on_eval(m):                                           # metrics reported from inside the training loop
             if task == 'explain':
-                scores, pairs = M.describe_eval(m, tok, val_recs, device, n=8)
-                return {'val_rougeL': scores['rougeL'], 'val_numbers_faithful': M.numbers_faithful(pairs)}
+                scores, pairs = M.describe_eval(m, tok, val_recs, device, n=8, delexed=args.delex)
+                return {'val_rougeL': scores['rougeL'], 'val_passes_checks': M.student_checks(pairs)[0]}
             gens = [complete(m, tok, '', 300, 0.8, None, device) for _ in range(8)]
             return {'gen_medicare_le_total': M.validity(gens, {}, {})['medicare_le_total_payment']}
 
         train(model, tok, batchers, args, config, args.train,
               log_path=args.train.replace('.pth', '_history.json'),  # bigram batches use --context_size
               task=task, on_eval=on_eval if args.model == 'gpt' else None)
+        if args.delex:                                            # remembered so --eval puts the values back
+            ck = torch.load(args.train, map_location='cpu')
+            ck['delex'] = True
+            torch.save(ck, args.train)
         return
 
     # ---- stage 4: generate --------------------------------------------------------------------
@@ -174,8 +190,10 @@ def main():
 
         def gen(prompt):
             if explain:                                           # record in, plain-English sentence out
-                prompt = prompt.rstrip() + ' || '
-                return complete(model, tok, prompt, 400, args.temperature, args.top_k, device)[len(prompt):]
+                rec = prompt.rstrip()
+                prompt = rec + ' || '
+                out = complete(model, tok, prompt, 400, args.temperature, args.top_k, device)[len(prompt):]
+                return D.relex(rec, out) if ck.get('delex') else out
             return complete(model, tok, prompt, args.max_new, args.temperature, args.top_k, device)
 
         if args.interactive:                                      # live demo mode
@@ -196,10 +214,16 @@ def main():
         ctx = ck['config'].get('context_size', args.context_size)
         ppl, acc = M.perplexity_and_accuracy(model, tok, test_text, device, ctx)
         if ck.get('task') == 'explain':                           # student vs teacher on unseen hospitals
-            scores, pairs = M.describe_eval(model, tok, test_recs, device, use_hf=args.hf_metrics)
-            report = {'model': 'explain', 'test_perplexity': round(ppl, 3), 'test_token_accuracy': round(acc, 3),
+            dx = ck.get('delex', False)
+            eval_recs = records(delex_text(test_text)) if dx else test_recs
+            ppl, acc = M.explain_perplexity(model, tok, eval_recs, device)   # explanation characters only
+            scores, pairs = M.describe_eval(model, tok, eval_recs, device, use_hf=args.hf_metrics, delexed=dx)
+            passed, place = M.student_checks(pairs)
+            report = {'model': 'explain' + (' (placeholders)' if dx else ''),
+                      'explanation_perplexity': round(ppl, 3), 'explanation_token_accuracy': round(acc, 3),
                       **{k: round(v, 3) for k, v in scores.items()},
-                      'numbers_faithful_to_record': round(M.numbers_faithful(pairs), 3)}
+                      'numbers_faithful_to_record': round(M.numbers_faithful(pairs), 3),
+                      'passes_teacher_checks': round(passed, 3), 'names_right_hospital_or_city': round(place, 3)}
             print(json.dumps(report, indent=1))
             print('\nexample\n  record :', pairs[0][0], '\n  teacher:', pairs[0][1], '\n  student:', pairs[0][2])
             json.dump(report, open(args.evaluate.replace('.pth', '_eval.json'), 'w'), indent=1)
@@ -221,17 +245,17 @@ def main():
     if args.flag:
         model, tok, ck = load(args.flag, device)
         bg = load(args.background, device)[0] if args.background else None   # bigram as the background model
-        if args.flag_file:                                        # real use on any file of records
-            for score, rec in FL.flag_file(model, tok, records(open(args.flag_file).read()), device, background=bg):
-                print(f'{score:6.2f}  {rec}')
+        if args.flag_file:                                        # real use: rules, then the model
+            train_recs = records(read_split(args.input, 'train'))
+            for hits, score, rec in FL.flag_file(model, tok, records(open(args.flag_file).read()), device, train_recs):
+                print(f"{score:5.2f}  {'RULE: ' + '; '.join(hits) if hits else 'model only'}\n       {rec}")
             return
         res, ex = FL.run(model, tok, records(read_split(args.input, 'test')),
                          records(read_split(args.input, 'train')), device, args.seed, background=bg)
-        cols = [k for k in next(iter(res.values())) if k.startswith('auc_')]
-        ci = [k for k in next(iter(res.values())) if k.startswith('ci_')][0]
-        print(f"{'error type':<18}{'n':>5}" + ''.join(f'{c:>11}' for c in cols) + f'{"95% CI":>16}')
+        cols = [k for k in next(iter(res.values())) if k.startswith('auc_')] + ['paired_raw']
+        print(f"{'error type':<18}{'n':>5}" + ''.join(f'{c:>12}' for c in cols) + f'{"95% CI raw":>17}')
         for k, v in res.items():
-            print(f"{k:<18}{v['n']:>5}" + ''.join(f'{v[c]:>11}' for c in cols) + f'{str(v[ci]):>16}')
+            print(f"{k:<18}{v['n']:>5}" + ''.join(f'{v[c]:>12}' for c in cols) + f"{str(v['ci_raw']):>17}")
         print('\nexample planted errors:')
         for k, e in ex.items():
             print(f'  {k}: {e}')
