@@ -71,7 +71,7 @@ Every hyperparameter is a flag (`--init_from`, `--delex`, `--n_layer`, `--n_head
 
 ## Results
 
-Runs on a Colab T4, 14 November 2026, each saved with its outputs: `notebooks/run1_14nov.ipynb` (1a), `notebooks/run1b_14nov.ipynb` (1b, a repeat of 1a), `notebooks/run2_14nov.ipynb` (2) and `notebooks/run3a_14nov.ipynb` (3a: re-evaluation and the paired test). The base GPT was trained three times with the same settings and seed; ranges below are across those trainings (GPU arithmetic is not perfectly deterministic). The bigram matched exactly every time. Test set: 20 hospitals never seen in training.
+Runs on a Colab T4, 14 November 2026, each saved with its outputs: `notebooks/run1_14nov.ipynb` (1a), `notebooks/run1b_14nov.ipynb` (1b, a repeat of 1a), `notebooks/run2_14nov.ipynb` (2), `notebooks/run3a_14nov.ipynb` (3a: re-evaluation and the paired test) and `notebooks/run3_14nov.ipynb` (3: the placeholder explainer). The base GPT was trained three times with the same settings and seed; ranges below are across those trainings (GPU arithmetic is not perfectly deterministic). The bigram matched exactly every time. Test set: 20 hospitals never seen in training.
 
 ### Language model: bigram vs GPT
 
@@ -128,15 +128,19 @@ Run 1's accepted sentences were fluent and often wrong ("received $15,466 from M
 | | Run 1 | Run 2 | Run 3 |
 |---|---|---|---|
 | Training | from scratch, random windows | from the record GPT, whole examples, loss on the explanation only | as run 2, with the record's values as placeholders |
-| ROUGE-L vs teacher | 0.312 / 0.319 | 0.438 / 0.413 | |
-| BLEU | 0.107 / 0.105 | 0.217 / 0.192 | |
-| BERTScore F1 | 0.891 / 0.892 raw | 0.513 / 0.504 rescaled | |
-| Explanation-only perplexity / next-character accuracy | | 1.88 / 85.7% | |
-| Sentences using only the record's numbers | 0% | 0% | |
-| Sentences passing the teacher's own checks | | **0%** | |
-| Sentences naming the record's hospital or city | | **2%** | |
+| ROUGE-L vs teacher | 0.312 / 0.319 | 0.438 / 0.413 | **0.561** |
+| BLEU | 0.107 / 0.105 | 0.217 / 0.192 | **0.459** |
+| BERTScore F1 | 0.891 / 0.892 raw | 0.513 / 0.504 rescaled | **0.676** rescaled |
+| Explanation-only perplexity / next-character accuracy | | 1.88 / 85.7% | **1.15 / 95.9%** |
+| Sentences using only the record's numbers | 0% | 0% | **93%** |
+| Sentences passing the teacher's own checks | | 0% | **93%** |
+| Sentences naming the record's hospital or city | | 2% | **100%** |
 
 Run 1 learned the teacher's style and ignored the record. Run 2 writes like the teacher (explanation perplexity 1.88, 86% of next characters right) and still fails every factual check: none of its sentences pass the teacher's checks, and 2% name the right hospital or city. It reads the record only partly: for Munson Healthcare Grayling Hospital it wrote about Munson Healthcare Otsego Memorial in Gaylord, the same health system thirty miles away, with numbers of the right size that were not the record's. A model under a million parameters fills a sentence from memory rather than copying digits from its input; the explainer reproduced the very silent error the project studies. Run 3 stops asking it to copy: the teacher's numbers, hospital, city and condition become placeholders for training, the student learns where each goes, and code puts the record's values back. This is delexicalisation (Wen et al., 2015), the standard way data-to-text systems keep numbers faithful.
+
+It worked. For Munson Healthcare Grayling Hospital, run 3 wrote: *"Munson Healthcare Grayling Hospital in Grayling, MI, treated 27 Medicare patients with respiratory infections and inflammations, averaging a bill of $37,016 but receiving $15,466 in total payments, with Medicare covering 95% of those payments."* Every number is the record's. Across 100 unseen test records, 93% of sentences pass the same checks the teacher had to pass, against 0% in run 2.
+
+What is still free text is the condition when the teacher paraphrased it: in one sample the model called respiratory infections "chronic obstructive pulmonary disease". The remaining 7% of failures are numbers that slipped in outside a placeholder. Both are visible to the same checks, so in use every sentence would be checked before it is shown.
 
 (Run 2's evaluation reported a test perplexity of 33.8. That was a measurement error: it scored the record text, which the fine-tuned student is never trained to predict. Run 3 measures perplexity on the explanation only.)
 
@@ -183,5 +187,7 @@ Two states, one year, and aggregated data. A planted error is a stand-in for a r
 - Vaswani et al., *Attention Is All You Need*, 2017.
 - Evaluation metrics as taught in the course (Lecture 6–7); BLEU and BERTScore through Hugging Face [`evaluate`](https://github.com/huggingface/evaluate).
 - Data: Centers for Medicare & Medicaid Services.
+
+AI assistance was used for code review and drafting; the design decisions, experiments and every reported number are from my own runs.
 
 Cynthia Mutua · [cynthiamutua.com](https://cynthiamutua.com)
