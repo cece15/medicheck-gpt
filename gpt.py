@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-MediCheck-GPT: a small character-level GPT trained on CMS Medicare inpatient records, used two ways:
-  1. a language model that writes records in the CMS style (--eval), and
-  2. a silent-error detector that flags records it finds surprising (--flag).
+MediCheck-GPT: small character-level GPTs trained on CMS Medicare inpatient records, used three ways:
+  1. explain: turn a record into a plain-English sentence, learned from an LLM teacher (--teacher, then --train)
+  2. write:   generate records in the CMS style (--eval)
+  3. flag:    rank records by how surprising they are, to catch silent errors (--flag)
 
 One command per stage of the flow:
   ./gpt.py --input data/raw/MUP_INP_RY26_P03_V10_DY24_PrvSvc.CSV --prepare data/processed
   ./gpt.py --input data/processed --train checkpoints/bigram.pth --model bigram --context_size 8 --lr 1e-2 --steps 3000
   ./gpt.py --input data/processed --train checkpoints/gpt.pth --steps 10000
+  ./gpt.py --input data/processed --teacher data/described --limit 3000
+  ./gpt.py --input data/described --train checkpoints/explain.pth --steps 10000
+  ./gpt.py --eval checkpoints/explain.pth --prompt "<paste a record>"
   ./gpt.py --eval checkpoints/gpt.pth --prompt "Trinity Health Livonia Hospital in Livonia, MI billed DRG "
   ./gpt.py --eval checkpoints/gpt.pth --interactive
   ./gpt.py --input data/processed --evaluate checkpoints/gpt.pth
@@ -49,6 +53,9 @@ def main():
     # what to do (pick one)
     p.add_argument('--input', help='CMS CSV (with --prepare) or the processed folder (train/eval/flag)')
     p.add_argument('--prepare', metavar='OUT_DIR', help='CSV -> train/val/test text, split by hospital')
+    p.add_argument('--teacher', metavar='OUT_DIR', help='LLM writes a plain-English description for each record')
+    p.add_argument('--teacher_model', default=None, help='Hugging Face model id for the teacher')
+    p.add_argument('--limit', type=int, default=3000, help='max training records sent to the teacher')
     p.add_argument('--train', metavar='CKPT', help='train a model and save the best checkpoint here')
     p.add_argument('--eval', metavar='CKPT', help='generate: complete --prompt, or chat with --interactive')
     p.add_argument('--evaluate', metavar='CKPT', help='perplexity, token accuracy, ROUGE-L, record validity')
@@ -89,12 +96,34 @@ def main():
         print(json.dumps(stats, indent=1))
         return
 
+    # ---- stage 1b: LLM teacher writes reference descriptions (Kacper's recommendation) -----------
+    if args.teacher:
+        from src.teacher import DEFAULT_TEACHER, write_descriptions
+        os.makedirs(args.teacher, exist_ok=True)
+        summary = {}
+        for split in ['train', 'val', 'test']:
+            recs = records(read_split(args.input, split))
+            if split == 'train':
+                recs = recs[:args.limit]                          # the teacher is the slow part; cap training examples
+            pairs, rejected = write_descriptions(recs, args.teacher_model or DEFAULT_TEACHER, device=device)
+            open(os.path.join(args.teacher, f'{split}.txt'), 'w').write('\n' + '\n'.join(pairs) + '\n')
+            summary[split] = {'records': len(recs), 'kept': len(pairs), 'rejected': rejected}
+        print(json.dumps(summary, indent=1))
+        json.dump(summary, open(os.path.join(args.teacher, 'teacher_report.json'), 'w'), indent=1)
+        print('example:', pairs[0])
+        return
+
     # ---- stage 2-3: train ---------------------------------------------------------------------
     if args.train:
         train_text, val_text = read_split(args.input, 'train'), read_split(args.input, 'val')
         tok = D.CharTokenizer(train_text)                         # vocabulary comes from training data only
         train_data = torch.tensor(tok.encode(train_text), dtype=torch.long)
         val_data = torch.tensor(tok.encode(val_text), dtype=torch.long)
+        task = 'explain' if ' || ' in train_text else 'record'    # pairs file -> explain task
+        longest = max(len(r) for r in records(train_text)) + 2
+        if args.model == 'gpt' and args.context_size < longest:     # the window must hold one whole example
+            print(f'context_size {args.context_size} -> {longest} so one full example fits')
+            args.context_size = longest
         config = {'vocab_size': len(tok)}
         if args.model == 'gpt':
             config.update(n_embd=args.n_embd, context_size=args.context_size, n_head=args.n_head,
@@ -103,16 +132,33 @@ def main():
         print(f'{args.model}: {count_params(model) / 1e6:.2f}M parameters | vocab {len(tok)} | '
               f'train {len(train_data):,} chars | val {len(val_data):,} chars')
         os.makedirs(os.path.dirname(args.train) or '.', exist_ok=True)
+        val_recs = records(val_text)
+
+        def on_eval(m):                                           # metrics reported from inside the training loop
+            if task == 'explain':
+                return {'val_rougeL': M.describe_eval(m, tok, val_recs, device, n=8)[0]['rougeL']}
+            gens = [complete(m, tok, '', 300, 0.8, None, device) for _ in range(8)]
+            return {'gen_valid': M.validity(gens, {}, {})['medicare_le_total_payment']}
+
         train(model, tok, train_data, val_data, args, config, args.train, device,
-              log_path=args.train.replace('.pth', '_history.json'))   # bigram batches use --context_size
+              log_path=args.train.replace('.pth', '_history.json'),  # bigram batches use --context_size
+              task=task, on_eval=on_eval if args.model == 'gpt' else None)
         return
 
     # ---- stage 4: generate --------------------------------------------------------------------
     if args.eval:
-        model, tok, _ = load(args.eval, device)
-        gen = lambda prompt: complete(model, tok, prompt, args.max_new, args.temperature, args.top_k, device)
+        model, tok, ck = load(args.eval, device)
+        explain = ck.get('task') == 'explain'
+
+        def gen(prompt):
+            if explain:                                           # record in, plain-English sentence out
+                prompt = prompt.rstrip() + ' || '
+                return complete(model, tok, prompt, 400, args.temperature, args.top_k, device)[len(prompt):]
+            return complete(model, tok, prompt, args.max_new, args.temperature, args.top_k, device)
+
         if args.interactive:                                      # live demo mode
-            print('Type the start of a record (Enter = from scratch, q = quit).')
+            print('Paste a record to explain (q = quit).' if explain else
+                  'Type the start of a record (Enter = from scratch, q = quit).')
             while (prompt := input('\n> ')) != 'q':
                 print(gen(prompt))
         else:
@@ -127,6 +173,15 @@ def main():
         test_recs, train_recs = records(test_text), records(train_text)
         ctx = ck['config'].get('context_size', args.context_size)
         ppl, acc = M.perplexity_and_accuracy(model, tok, test_text, device, ctx)
+        if ck.get('task') == 'explain':                           # student vs teacher on unseen hospitals
+            scores, pairs = M.describe_eval(model, tok, test_recs, device, use_hf=args.hf_metrics)
+            report = {'model': 'explain', 'test_perplexity': round(ppl, 3), 'test_token_accuracy': round(acc, 3),
+                      **{k: round(v, 3) for k, v in scores.items()},
+                      'numbers_faithful_to_record': round(M.numbers_faithful(pairs), 3)}
+            print(json.dumps(report, indent=1))
+            print('\nexample\n  record :', pairs[0][0], '\n  teacher:', pairs[0][1], '\n  student:', pairs[0][2])
+            json.dump(report, open(args.evaluate.replace('.pth', '_eval.json'), 'w'), indent=1)
+            return
         gen_scores, pairs = M.completion_eval(model, tok, test_recs, device, use_hf=args.hf_metrics)
         drg_map, place_map = M.known_facts(train_recs)
         torch.manual_seed(args.seed)

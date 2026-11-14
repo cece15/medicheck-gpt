@@ -34,8 +34,10 @@ def lr_at(step, max_steps, lr, warmup):
     return lr * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
 
 
-def train(model, tok, train_data, val_data, args, config, ckpt_path, device, log_path=None):
-    """Train, log every eval_every steps, keep the best checkpoint, stop when val stops improving."""
+def train(model, tok, train_data, val_data, args, config, ckpt_path, device, log_path=None, task='record', on_eval=None):
+    """Train, log every eval_every steps, keep the best checkpoint, stop when val stops improving.
+    on_eval: optional function(model) -> dict of extra metrics, run at every evaluation (Kacper, 10 Nov:
+    report evaluation metrics periodically from inside the training loop)."""
     torch.manual_seed(args.seed)                                  # reproducible batches and dropout
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     ctx = config.get('context_size', args.context_size)
@@ -47,11 +49,15 @@ def train(model, tok, train_data, val_data, args, config, ckpt_path, device, log
 
         if step % args.eval_every == 0 or step == args.steps - 1:
             l = estimate_loss(model, {'train': train_data, 'val': val_data}, args.batch_size, ctx, device)
+            l['val_perplexity'] = math.exp(l['val'])                 # perplexity = exp(cross-entropy)
+            if on_eval:
+                l.update(on_eval(model))                              # e.g. ROUGE-L on a few validation examples
             history.append({'step': step, **l, 'seconds': round(time.time() - t0)})
-            print(f"step {step:>6} | train {l['train']:.4f} | val {l['val']:.4f} | {time.time() - t0:.0f}s")
+            extra = ' | '.join(f'{k} {v:.3f}' for k, v in l.items() if k not in ('train', 'val'))
+            print(f"step {step:>6} | train {l['train']:.4f} | val {l['val']:.4f} | {extra} | {time.time() - t0:.0f}s")
             if l['val'] < best:                                   # new best: save it, reset patience
                 best, bad_evals = l['val'], 0
-                save(ckpt_path, model, tok, config, args, history)
+                save(ckpt_path, model, tok, config, args, history, task)
             else:                                                 # val got worse: one strike
                 bad_evals += 1
                 if bad_evals >= args.patience:                    # train keeps falling, val keeps rising = overfitting
@@ -71,7 +77,7 @@ def train(model, tok, train_data, val_data, args, config, ckpt_path, device, log
     return history
 
 
-def save(path, model, tok, config, args, history):
+def save(path, model, tok, config, args, history, task='record'):
     """Everything needed to rebuild the model later: weights, architecture, tokenizer, training settings."""
-    torch.save({'kind': args.model, 'model_state': model.state_dict(), 'config': config,
+    torch.save({'kind': args.model, 'task': task, 'model_state': model.state_dict(), 'config': config,
                 'stoi': tok.stoi, 'train_args': vars(args), 'history': history}, path)

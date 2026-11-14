@@ -96,6 +96,43 @@ def completion_eval(model, tok, test_records, device, n=100, temperature=0.8, us
     return out, list(zip(refs, preds))
 
 
+def describe_eval(model, tok, pairs, device, n=100, temperature=0.8, use_hf=False):
+    """Kacper's task: give the student a record, let it write the description, compare with the teacher's.
+    Here BLEU / ROUGE / BERTScore have a real reference to compare against."""
+    preds, refs, recs = [], [], []
+    for p in pairs[:n]:
+        rec, ref = p.split(' || ', 1)
+        recs.append(rec)
+        prompt = rec + ' || '
+        preds.append(complete(model, tok, prompt, max_new=400, temperature=temperature, device=device)[len(prompt):])
+        refs.append(ref)
+    out = {'rougeL': sum(rouge_l(a, b) for a, b in zip(preds, refs)) / len(refs)}
+    if use_hf:
+        import evaluate
+        out['bleu'] = evaluate.load('bleu').compute(predictions=preds, references=[[r] for r in refs])['bleu']
+        bs = evaluate.load('bertscore').compute(predictions=preds, references=refs, lang='en')
+        out['bertscore_f1'] = sum(bs['f1']) / len(bs['f1'])
+    return out, list(zip(recs, refs, preds))
+
+
+def numbers_faithful(pairs_out):
+    """Share of student descriptions whose numbers all appear in the record it was given: did it copy or invent?"""
+    import re
+    ok = 0
+    for rec, _, pred in pairs_out:
+        nums = {n.replace(',', '') for n in re.findall(r'\d[\d,]*', pred)}
+        ok += nums <= {n.replace(',', '') for n in re.findall(r'\d[\d,]*', rec)} | _derived(rec)
+    return ok / len(pairs_out)
+
+
+def _derived(rec):
+    """Percentages the teacher was allowed to use, recomputed from the record."""
+    f = parse(rec)
+    if not f or not int(f['t']) or not int(f['c']):
+        return set()
+    return {str(round(100 * int(f['m']) / int(f['t']))), str(round(100 * int(f['t']) / int(f['c'])))}
+
+
 def known_facts(train_records):
     """What the training data says is true: which description goes with each DRG code, where each hospital is."""
     drg, place = {}, {}
