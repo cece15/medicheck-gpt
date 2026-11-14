@@ -61,8 +61,17 @@ KINDS = ['drg_mismatch', 'wrong_city', 'payments_swapped', 'extra_digit']
 def auc(pos, neg):
     """ROC AUC as a probability: pick one corrupted and one clean record; how often does the corrupted
     one score higher? (Mann-Whitney U. Ties count half.)"""
-    wins = sum((p > n) + 0.5 * (p == n) for p in pos for n in neg)
-    return wins / (len(pos) * len(neg))
+    ranked = sorted([(v, 1) for v in pos] + [(v, 0) for v in neg])   # rank all scores together
+    rank_sum, i = 0.0, 0
+    while i < len(ranked):                                        # ties share the average rank
+        j = i
+        while j < len(ranked) and ranked[j][0] == ranked[i][0]:
+            j += 1
+        avg = (i + j + 1) / 2
+        rank_sum += avg * sum(lab for _, lab in ranked[i:j])
+        i = j
+    u = rank_sum - len(pos) * (len(pos) + 1) / 2                  # Mann-Whitney U from the rank sum
+    return u / (len(pos) * len(neg))
 
 
 def auc_ci(pos, neg, reps=200, seed=0):
