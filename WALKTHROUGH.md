@@ -56,7 +56,7 @@ Before training, `delex` swaps the record's own values in the teacher's sentence
 
 The model decides the sentence and code guarantees the numbers. If the model ever writes a malformed placeholder, it shows up in the output instead of turning into a wrong number. With placeholders, 93% of the student's sentences pass the teacher's checks and all of them name the right hospital or city, against 0% and 2% without.
 
-Testing on Illinois showed two facts still coming from memory: the state, which version 3 copied as a fixed "MI", and the condition whenever the teacher had rephrased it. Version 4 makes both placeholders as well: `CONDITION_SPAN` finds the teacher's condition phrase even when it isn't an exact match, and the state is matched as a whole word. `sentence_facts_ok` in `metrics.py` checks both, and `fully_correct` only counts a sentence when every check passes.
+Testing on Illinois showed two facts still coming from memory: the state, which version 3 copied as a fixed "MI", and the condition whenever the teacher had rephrased it. Version 4 makes both placeholders as well: `CONDITION_SPAN` finds the teacher's condition phrase even when it isn't an exact match, and the state is matched as a whole word. `sentence_facts_ok` in `metrics.py` checks both, and `fully_correct` only counts a sentence when every check passes. Version 3 was fully correct 9% of the time on these checks; version 4 is 78% on Michigan and Ohio and 94% on Illinois.
 
 ## Step 4. Generation — `src/generate.py`
 
