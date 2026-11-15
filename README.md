@@ -74,6 +74,20 @@ Every hyperparameter is a flag (`--init_from`, `--delex`, `--n_layer`, `--n_head
 
 Runs on a Colab T4, 14 November 2026, each saved with its outputs: `notebooks/run1_14nov.ipynb` (1a), `notebooks/run1b_14nov.ipynb` (1b, a repeat of 1a), `notebooks/run2_14nov.ipynb` (2), `notebooks/run3a_14nov.ipynb` (3a: re-evaluation and the paired test) `notebooks/run3_14nov.ipynb` (3: the placeholder explainer) `notebooks/run4_14nov.ipynb` (4: tests and Illinois) and `notebooks/run5_14nov.ipynb` (5: explainer version 4). The base GPT was trained three times with the same settings and seed; ranges below are across those trainings (GPU arithmetic is not perfectly deterministic). The bigram matched exactly every time. Test set: 20 hospitals never seen in training.
 
+### Training time
+
+On a free Colab T4 GPU, from the logs in the saved runs. Time is measured from the start of training to the last evaluation. Training stops early when validation loss stops improving, and the best checkpoint is the one kept.
+
+| Model | Parameters | Steps run | Time | Best validation loss |
+|---|---|---|---|---|
+| Bigram | 5,929 | 3,000 | 8 seconds | 2.152 |
+| GPT, small | 126,989 | 6,000 | about 2 minutes | 0.716 |
+| GPT, base | 846,285 | 6,000 (stopped early, of 10,000) | about 8 minutes | 0.652 |
+| GPT, large | 2,747,789 | 3,500 | about 12 minutes | 0.621 |
+| Explainer v4 | base GPT layers, longer context | 3,500 (stopped early, of 4,000) | about 14 minutes | 0.204 |
+
+The explainer starts from the base GPT's weights, so its time comes on top of the base model's. Each checkpoint also stores its loss history (step, train loss, validation loss, seconds), which is what the loss curves are drawn from.
+
 ### Language model: bigram vs GPT
 
 | Metric | Bigram | GPT (range over 3 trainings) |
