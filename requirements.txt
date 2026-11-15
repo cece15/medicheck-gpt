@@ -5,3 +5,4 @@ accelerate
 # optional, only for --hf_metrics (BLEU and BERTScore)
 evaluate
 bert_score
+pytest            # tests

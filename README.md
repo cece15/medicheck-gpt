@@ -55,7 +55,8 @@ pip install -r requirements.txt
 # 2b. teacher writes descriptions, student learns them
 ./gpt.py --input data/processed --teacher data/described --limit 5000
 ./gpt.py --input data/described --train checkpoints/explain.pth --init_from checkpoints/gpt.pth --delex --steps 4000
-./gpt.py --eval checkpoints/explain.pth --interactive --temperature 0.5            # paste a record, get a sentence
+./gpt.py --eval checkpoints/explain.pth --interactive --temperature 0.5
+./gpt.py --eval checkpoints/explain.pth --explain_file records.txt --n 100   # explain a file, check every sentence            # paste a record, get a sentence
 
 # 3. generate
 ./gpt.py --eval checkpoints/gpt.pth --prompt "Trinity Health Livonia Hospital in Livonia, MI billed DRG "
@@ -162,6 +163,16 @@ What this shows:
 - **The model notices almost every error; it cannot rank them.** On the same record, an extra digit raises surprise 99% of the time, swapped payments 90%, a mismatched diagnosis 85%. Across records the same errors sit near chance (0.53–0.68), because one hospital's ordinary record can be more surprising than another's corrupted one. The signal is real; the noise is the hospitals. Earlier runs, which measured only ranking, concluded the model "could not see arithmetic". The paired test shows that was wrong: it sees it, it just cannot tell you which record to look at first.
 - **Surprise measures familiarity, not truth.** The wrong city is the one error the model gets backwards in both tests (0.16–0.21): a planted city comes from training data (Columbus) and is familiar; the true city of an unseen hospital is often rare (Grayling). The same failure is documented for deep generative models (Nalisnick et al., 2019). A wrong city is a lookup against CMS's hospital register, not a language problem.
 - **So the tool is a hybrid.** `--flag_file` runs rules first (Medicare more than the total; paid more than billed; a bill beyond the 99.5th percentile of charge-to-payment ratios in training), then ranks the rest by the model's surprise. On the demo file (5 real, 5 planted, shuffled), the rules put the swapped payments and the extra digit at the top, and the model ranked two of the remaining three planted records 2nd and 3rd of 8: four of the top five are planted errors.
+
+## Testing
+
+```bash
+python -m pytest tests -q        # 13 tests, about a minute on a laptop CPU, no data or GPU needed
+```
+
+- `tests/test_core.py` covers the parts that must never be wrong: parsing, the hospital split (no hospital in two sets), the tokenizer, that fine-tuning grades only the explanation, the placeholder round trip, every kind of mistake the teacher's checks must catch (and correct sentences they must pass), the AUC against its brute-force definition, the rules, that each planted error changes exactly one field, that the GPT learns, and that weights transfer by character.
+- `tests/test_end_to_end.py` runs the whole command-line flow on a small synthetic file, from CSV to a flagged record, and checks that a planted arithmetic error is caught by the rules and ranked first.
+- Section 8 of the notebook tests generalization on Illinois, a state none of the models trained on: record-model perplexity, the explainer's check pass rate on 100 Illinois records (`--explain_file`), and flagging.
 
 ## Design decisions
 

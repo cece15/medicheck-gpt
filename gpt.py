@@ -96,6 +96,7 @@ def main():
     p.add_argument('--temperature', type=float, default=0.8)
     p.add_argument('--top_k', type=int, default=None)
     p.add_argument('--interactive', action='store_true')
+    p.add_argument('--explain_file', metavar='TXT', help='with --eval on an explainer: explain every record in a file and check each sentence')
     p.add_argument('--hf_metrics', action='store_true', help='also compute BLEU and BERTScore (downloads models)')
     args = p.parse_args()
     device = pick_device()
@@ -197,6 +198,20 @@ def main():
                 return D.relex(rec, out) if ck.get('delex') else out
             return complete(model, tok, prompt, args.max_new, args.temperature, args.top_k, device)
 
+        if args.explain_file:                                     # explain a whole file and hold every sentence to the teacher's checks
+            from src.teacher import check, facts
+            recs = [r for r in records(open(args.explain_file).read()) if D.parse(r)][:args.n]
+            passed = place = 0
+            for rec in recs:
+                s = gen(rec)
+                f = D.parse(rec)
+                ok = check(s, facts(f)) is None
+                passed += ok
+                place += f['name'].lower() in s.lower() or f['city'].lower() in s.lower()
+                print(f"{'ok  ' if ok else 'FAIL'}  {s}")
+            print(f'\n{len(recs)} records | passes the teacher\'s checks: {passed / len(recs):.0%} | '
+                  f'names the right hospital or city: {place / len(recs):.0%}')
+            return
         if args.interactive:                                      # live demo mode
             print('Paste a record to explain (q = quit).' if explain else
                   'Type the start of a record (Enter = from scratch, q = quit).')
