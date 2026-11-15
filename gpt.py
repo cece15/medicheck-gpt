@@ -48,6 +48,11 @@ def records(text):
     return [r for r in text.split('\n') if r]                     # one record per non-empty line
 
 
+def result_path(ckpt, data_dir, kind):
+    """checkpoints/gpt.pth + data/state_il -> checkpoints/gpt_state_il_flag.json, so results never overwrite each other."""
+    return ckpt.replace('.pth', f'_{os.path.basename(os.path.normpath(data_dir))}_{kind}.json')
+
+
 def delex_text(text):
     """Apply delex to every 'record || sentence' line."""
     out = []
@@ -172,7 +177,7 @@ def main():
         def on_eval(m):                                           # metrics reported from inside the training loop
             if task == 'explain':
                 scores, pairs = M.describe_eval(m, tok, val_recs, device, n=8, delexed=args.delex)
-                return {'val_rougeL': scores['rougeL'], 'val_passes_checks': M.student_checks(pairs)[0]}
+                return {'val_rougeL': scores['rougeL'], 'val_fully_correct': M.student_checks(pairs)['fully_correct']}
             gens = [complete(m, tok, '', 300, 0.8, None, device) for _ in range(8)]
             return {'gen_medicare_le_total': M.validity(gens, {}, {})['medicare_le_total_payment']}
 
@@ -201,16 +206,14 @@ def main():
         if args.explain_file:                                     # explain a whole file and hold every sentence to the teacher's checks
             from src.teacher import check, facts
             recs = [r for r in records(open(args.explain_file).read()) if D.parse(r)][:args.n]
-            passed = place = 0
+            triples = []
             for rec in recs:
                 s = gen(rec)
-                f = D.parse(rec)
-                ok = check(s, facts(f)) is None
-                passed += ok
-                place += f['name'].lower() in s.lower() or f['city'].lower() in s.lower()
-                print(f"{'ok  ' if ok else 'FAIL'}  {s}")
-            print(f'\n{len(recs)} records | passes the teacher\'s checks: {passed / len(recs):.0%} | '
-                  f'names the right hospital or city: {place / len(recs):.0%}')
+                triples.append((rec, None, s))
+                one = M.student_checks([(rec, None, s)])
+                print(f"{'ok  ' if one['fully_correct'] else 'FAIL'}  {s}")
+            summary = M.student_checks(triples)
+            print(f'\n{len(recs)} records | ' + ' | '.join(f'{k.replace("_", " ")}: {v:.0%}' for k, v in summary.items()))
             return
         if args.interactive:                                      # live demo mode
             print('Paste a record to explain (q = quit).' if explain else
@@ -234,15 +237,14 @@ def main():
             eval_recs = records(delex_text(test_text)) if dx else test_recs
             ppl, acc = M.explain_perplexity(model, tok, eval_recs, device)   # explanation characters only
             scores, pairs = M.describe_eval(model, tok, eval_recs, device, use_hf=args.hf_metrics, delexed=dx)
-            passed, place = M.student_checks(pairs)
             report = {'model': 'explain' + (' (placeholders)' if dx else ''),
                       'explanation_perplexity': round(ppl, 3), 'explanation_token_accuracy': round(acc, 3),
                       **{k: round(v, 3) for k, v in scores.items()},
                       'numbers_faithful_to_record': round(M.numbers_faithful(pairs), 3),
-                      'passes_teacher_checks': round(passed, 3), 'names_right_hospital_or_city': round(place, 3)}
+                      **M.student_checks(pairs)}
             print(json.dumps(report, indent=1))
             print('\nexample\n  record :', pairs[0][0], '\n  teacher:', pairs[0][1], '\n  student:', pairs[0][2])
-            json.dump(report, open(args.evaluate.replace('.pth', '_eval.json'), 'w'), indent=1)
+            json.dump(report, open(result_path(args.evaluate, args.input, 'eval'), 'w'), indent=1)
             return
         gen_scores, pairs = M.completion_eval(model, tok, test_recs, device, use_hf=args.hf_metrics)
         drg_map, place_map = M.known_facts(train_recs)
@@ -254,7 +256,7 @@ def main():
                   'validity_real_test_records': M.validity(test_recs, drg_map, place_map)}  # the ceiling to compare against
         print(json.dumps(report, indent=1))
         print('\nexample completion\n  real :', pairs[0][0], '\n  model:', pairs[0][1])
-        json.dump(report, open(args.evaluate.replace('.pth', '_eval.json'), 'w'), indent=1)
+        json.dump(report, open(result_path(args.evaluate, args.input, 'eval'), 'w'), indent=1)
         return
 
     # ---- stage 6: flag silent errors ----------------------------------------------------------
@@ -275,7 +277,7 @@ def main():
         print('\nexample planted errors:')
         for k, e in ex.items():
             print(f'  {k}: {e}')
-        json.dump(res, open(args.flag.replace('.pth', '_flag.json'), 'w'), indent=1)
+        json.dump(res, open(result_path(args.flag, args.input, 'flag'), 'w'), indent=1)
         return
 
     p.print_help()

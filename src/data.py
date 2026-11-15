@@ -133,6 +133,13 @@ def _values(f):
             '{HOSPITAL}': f['name'], '{CITY}': f['city'], '{CONDITION}': f['desc'].lower()}
 
 
+STATE_NAMES = {'MI': 'Michigan', 'OH': 'Ohio', 'IL': 'Illinois', 'IN': 'Indiana', 'WI': 'Wisconsin'}
+
+# the teacher usually writes "... patients with <condition>, averaging ..."; this finds the condition
+# even when the teacher rephrased it, so the student never has to write a diagnosis from memory
+CONDITION_SPAN = re.compile(r"(patients (?:with|for) )(.+?)(?=, | averaging| billing| who | and (?:was|were|received|billed))")
+
+
 def delex(record, sentence):
     """Replace the record's own values in the teacher's sentence with placeholders."""
     f = parse(record)
@@ -141,6 +148,11 @@ def delex(record, sentence):
     for slot, value in _values(f).items():                         # hospital before city: names often contain the city
         if value:
             sentence = re.sub(re.escape(value), slot, sentence, flags=re.IGNORECASE)
+    if '{CONDITION}' not in sentence:                               # rephrased by the teacher: take the span instead
+        sentence = CONDITION_SPAN.sub(lambda m: m.group(1) + '{CONDITION}', sentence, count=1)
+    for name in (f['state'], STATE_NAMES.get(f['state'], '')):      # "MI" or "Michigan" -> {STATE}; whole words only
+        if name:
+            sentence = re.sub(rf'\b{name}\b', '{STATE}', sentence)
     sentence = re.sub(rf"\b{f['n']}\b(?= (Medicare )?patients)", '{PATIENTS}', sentence)
     return sentence
 
@@ -150,7 +162,7 @@ def relex(record, sentence):
     f = parse(record)
     if f is None:
         return sentence
-    for slot, value in {**_values(f), '{PATIENTS}': f['n']}.items():
+    for slot, value in {**_values(f), '{PATIENTS}': f['n'], '{STATE}': f['state']}.items():
         sentence = sentence.replace(slot, value or '')
     return sentence
 

@@ -11,6 +11,7 @@ ROUGE-L is computed here directly (longest common subsequence) so the core evalu
 extra downloads; BLEU and BERTScore use Hugging Face `evaluate` when it is installed.
 """
 import math
+import re
 
 import torch
 import torch.nn.functional as F
@@ -124,16 +125,34 @@ def explain_perplexity(model, tok, pairs, device):
     return math.exp(nll / n), correct / n
 
 
+def sentence_facts_ok(rec, pred):
+    """The facts the number checks can't see: the record's own condition and state."""
+    from .data import STATE_NAMES
+    f = parse(rec)
+    condition = f['desc'].lower() in pred.lower()
+    named = set(re.findall(r', ([A-Z]{2})\b', pred)) | {k for k, v in STATE_NAMES.items() if v in pred}
+    state = named <= {f['state']}                                  # naming no state is fine; naming the wrong one is not
+    return condition, state
+
+
 def student_checks(triples):
     """Hold the student to the teacher's standard: the share of its sentences that pass the same
-    invented-number and wrong-label checks, and that name the record's own hospital or city."""
+    invented-number and wrong-label checks, that name the record's own hospital or city, that state
+    its condition, and that give no wrong state."""
     from .teacher import check, facts
-    passed, right_place = 0, 0
+    out = {'passes_teacher_checks': 0, 'names_right_hospital_or_city': 0, 'right_condition': 0,
+           'no_wrong_state': 0, 'fully_correct': 0}
     for rec, _, pred in triples:
         f = parse(rec)
-        passed += check(pred, facts(f)) is None
-        right_place += f['name'].lower() in pred.lower() or f['city'].lower() in pred.lower()
-    return passed / len(triples), right_place / len(triples)
+        numbers = check(pred, facts(f)) is None
+        place = f['name'].lower() in pred.lower() or f['city'].lower() in pred.lower()
+        condition, state = sentence_facts_ok(rec, pred)
+        out['passes_teacher_checks'] += numbers
+        out['names_right_hospital_or_city'] += place
+        out['right_condition'] += condition
+        out['no_wrong_state'] += state
+        out['fully_correct'] += numbers and place and condition and state
+    return {k: round(v / len(triples), 3) for k, v in out.items()}
 
 
 def describe_eval(model, tok, pairs, device, n=100, temperature=0.8, use_hf=False, delexed=False):

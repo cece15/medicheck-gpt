@@ -133,3 +133,27 @@ def test_init_from_copies_matching_characters_and_positions():
     init_from(big, ck, stoi)
     assert torch.equal(big.token_embedding_table.weight[stoi['c']], small.token_embedding_table.weight[2])
     assert torch.equal(big.position_embedding_table.weight[:10], small.position_embedding_table.weight)
+
+
+def test_condition_and_state_become_placeholders_even_when_rephrased():
+    rec = ("Corewell Health Zeeland Hospital in Zeeland, MI billed DRG 871 (SEPTICEMIA OR SEVERE SEPSIS WITHOUT MV "
+           ">96 HOURS WITH MCC) for 53 discharges: covered charges $28663, total payment $12681, Medicare payment $10761.")
+    s = ("Corewell Health Zeeland Hospital in Zeeland, MI treated 53 Medicare patients with septicemia or severe sepsis "
+         "without mechanical ventilation for more than 96 hours, averaging a bill of $28,663 but receiving $12,681 in "
+         "total payments, with Medicare covering 85% of those payments.")
+    d = D.delex(rec, s)
+    assert '{CONDITION}' in d and '{STATE}' in d and 'septicemia' not in d and ', MI' not in d
+    back = D.relex(rec, d)
+    assert 'septicemia or severe sepsis without mv >96 hours with mcc' in back and 'Zeeland, MI' in back
+
+
+def test_checks_catch_a_wrong_state_and_a_wrong_condition():
+    from src.metrics import student_checks
+    il = REC.replace('Grayling, MI', 'Waukegan, IL').replace('Munson Healthcare Grayling Hospital', 'Vista Medical Center East')
+    good = ("Vista Medical Center East in Waukegan, IL treated 27 Medicare patients with respiratory infections and "
+            "inflammations with mcc, averaging a bill of $37,016 but receiving $15,466 in total payments.")
+    wrong_state = good.replace('Waukegan, IL', 'Waukegan, MI')
+    wrong_condition = good.replace('respiratory infections and inflammations with mcc', 'renal failure')
+    assert student_checks([(il, None, good)])['fully_correct'] == 1
+    assert student_checks([(il, None, wrong_state)])['no_wrong_state'] == 0
+    assert student_checks([(il, None, wrong_condition)])['right_condition'] == 0

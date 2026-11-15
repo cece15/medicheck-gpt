@@ -72,7 +72,7 @@ Every hyperparameter is a flag (`--init_from`, `--delex`, `--n_layer`, `--n_head
 
 ## Results
 
-Runs on a Colab T4, 14 November 2026, each saved with its outputs: `notebooks/run1_14nov.ipynb` (1a), `notebooks/run1b_14nov.ipynb` (1b, a repeat of 1a), `notebooks/run2_14nov.ipynb` (2), `notebooks/run3a_14nov.ipynb` (3a: re-evaluation and the paired test) and `notebooks/run3_14nov.ipynb` (3: the placeholder explainer). The base GPT was trained three times with the same settings and seed; ranges below are across those trainings (GPU arithmetic is not perfectly deterministic). The bigram matched exactly every time. Test set: 20 hospitals never seen in training.
+Runs on a Colab T4, 14 November 2026, each saved with its outputs: `notebooks/run1_14nov.ipynb` (1a), `notebooks/run1b_14nov.ipynb` (1b, a repeat of 1a), `notebooks/run2_14nov.ipynb` (2), `notebooks/run3a_14nov.ipynb` (3a: re-evaluation and the paired test) `notebooks/run3_14nov.ipynb` (3: the placeholder explainer) and `notebooks/run4_14nov.ipynb` (4: tests and Illinois). The base GPT was trained three times with the same settings and seed; ranges below are across those trainings (GPU arithmetic is not perfectly deterministic). The bigram matched exactly every time. Test set: 20 hospitals never seen in training.
 
 ### Language model: bigram vs GPT
 
@@ -137,11 +137,13 @@ Run 1's accepted sentences were fluent and often wrong ("received $15,466 from M
 | Sentences passing the teacher's own checks | | 0% | **93%** |
 | Sentences naming the record's hospital or city | | 2% | **100%** |
 
+Version 4, and version 3 on the stricter checks (right condition, no wrong state, fully correct), are in `notebooks/run_on_colab.ipynb` sections 3e and 5.
+
 Run 1 learned the teacher's style and ignored the record. Run 2 writes like the teacher (explanation perplexity 1.88, 86% of next characters right) and still fails every factual check: none of its sentences pass the teacher's checks, and 2% name the right hospital or city. It reads the record only partly: for Munson Healthcare Grayling Hospital it wrote about Munson Healthcare Otsego Memorial in Gaylord, the same health system thirty miles away, with numbers of the right size that were not the record's. A model under a million parameters fills a sentence from memory rather than copying digits from its input; the explainer reproduced the very silent error the project studies. Run 3 stops asking it to copy: the teacher's numbers, hospital, city and condition become placeholders for training, the student learns where each goes, and code puts the record's values back. This is delexicalisation (Wen et al., 2015), the standard way data-to-text systems keep numbers faithful.
 
 It worked. For Munson Healthcare Grayling Hospital, run 3 wrote: *"Munson Healthcare Grayling Hospital in Grayling, MI, treated 27 Medicare patients with respiratory infections and inflammations, averaging a bill of $37,016 but receiving $15,466 in total payments, with Medicare covering 95% of those payments."* Every number is the record's. Across 100 unseen test records, 93% of sentences pass the same checks the teacher had to pass, against 0% in run 2.
 
-What is still free text is the condition when the teacher paraphrased it: in one sample the model called respiratory infections "chronic obstructive pulmonary disease". The remaining 7% of failures are numbers that slipped in outside a placeholder. Both are visible to the same checks, so in use every sentence would be checked before it is shown.
+**Testing on a new state found what these checks missed.** On Illinois (below), version 3 wrote "Vista Medical Center East in Waukegan, **MI**": the state was never a placeholder, so the model learned "MI" as a fixed word. And the condition, which the teacher often rephrased, was still written from memory; in one sample it called a respiratory record "kidney and urinary tract infections". The number checks could not see either. Version 4 turns the teacher's condition phrase and the state into placeholders too, and the checks now test both: right condition, no wrong state, and a **fully correct** rate that requires every check at once.
 
 (Run 2's evaluation reported a test perplexity of 33.8. That was a measurement error: it scored the record text, which the fine-tuned student is never trained to predict. Run 3 measures perplexity on the explanation only.)
 
@@ -167,12 +169,23 @@ What this shows:
 ## Testing
 
 ```bash
-python -m pytest tests -q        # 13 tests, about a minute on a laptop CPU, no data or GPU needed
+python -m pytest tests -q        # 15 tests, about a minute on a laptop CPU, no data or GPU needed
 ```
 
-- `tests/test_core.py` covers the parts that must never be wrong: parsing, the hospital split (no hospital in two sets), the tokenizer, that fine-tuning grades only the explanation, the placeholder round trip, every kind of mistake the teacher's checks must catch (and correct sentences they must pass), the AUC against its brute-force definition, the rules, that each planted error changes exactly one field, that the GPT learns, and that weights transfer by character.
+- `tests/test_core.py` covers the parts that must never be wrong: parsing, the hospital split (no hospital in two sets), the tokenizer, that fine-tuning grades only the explanation, the placeholders (including a condition the teacher rephrased, and the state), every kind of mistake the checks must catch (and correct sentences they must pass), the AUC against its brute-force definition, the rules, that each planted error changes exactly one field, that the GPT learns, and that weights transfer by character.
 - `tests/test_end_to_end.py` runs the whole command-line flow on a small synthetic file, from CSV to a flagged record, and checks that a planted arithmetic error is caught by the rules and ranked first.
-- Section 8 of the notebook tests generalization on Illinois, a state none of the models trained on: record-model perplexity, the explainer's check pass rate on 100 Illinois records (`--explain_file`), and flagging.
+
+### Illinois: a state none of the models trained on
+
+| | Michigan and Ohio test hospitals | Illinois |
+|---|---|---|
+| Record model perplexity / next-character accuracy | 1.94 – 1.96 / 85% | 2.76 / 81.5% |
+| Bigram perplexity, for scale | 8.64 | |
+| Explainer v3: passes the number checks / names the right hospital or city | 93% / 100% | 97% / 100% |
+| Flagger, paired: extra digit / swapped payments / mismatched diagnosis | 99.4% / 89.6% / 84.8% | 99.8% / 89.0% / 76.6% |
+| Flagger, AUC for a wrong city | 0.21 (backwards) | 0.55 (chance) |
+
+The record model is worse on a new state, as it should be with new hospitals and towns, and still far from the bigram: it learned what a Medicare record is, not two states. The wrong-city result is the clearest evidence for the familiarity explanation above. In Michigan and Ohio, planted cities came from hospitals the model had trained on, so the wrong record looked more familiar than the right one. In Illinois every city is new to the model, the familiarity advantage disappears, and the score moves to chance. The explainer's 97% is where testing paid off: reading the Illinois sentences found the wrong state and the remembered conditions described above, which is why version 4 exists.
 
 ## Design decisions
 
