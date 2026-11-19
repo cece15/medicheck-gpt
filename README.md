@@ -165,7 +165,7 @@ Run 1's accepted sentences were fluent and often wrong ("received $15,466 from M
 | ROUGE-L / BLEU / BERTScore (rescaled) | 0.547 – 0.577 / 0.432 – 0.470 / 0.655 – 0.656 | 0.655 – 0.660 / 0.560 – 0.564 / 0.738 – 0.743 |
 | Illinois, never seen: fully correct | | **94% – 96%** |
 
-Ranges in this table are two evaluations of the same saved checkpoints, on 14 November (run 5) and 17 November (run 6), each on 100 test records; only the sampling differed (temperature 0.5). Nothing was retrained between them.
+Ranges in this table are two evaluations of the same saved checkpoints, on 14 November (run 5) and 17 November (run 6), each on the first 100 teacher-filtered test records at sampling temperature 0.8 (the `--evaluate` default); only the random sampling differed. Nothing was retrained between them. The Illinois figures come from `--explain_file` at temperature 0.5 on the first 100 records of the unfiltered Illinois test file.
 
 On the stricter checks, version 3 was fully correct only 4% to 9% of the time: its numbers were right and its diagnoses mostly were not. Version 4 states the record's own condition in 78% to 85% of Michigan and Ohio sentences and 94% to 96% of Illinois sentences. The remaining misses are records where the teacher worded the condition in a way the placeholder pattern did not find, so the student wrote it from memory; the `right_condition` check flags every one of them.
 
